@@ -40,7 +40,6 @@ arr[10] = "hhh";
 arr[11] = {
   foobar: 10
 };
-debug(arr);
 
 //var and let
 cc1 = "cc1";
@@ -48,9 +47,11 @@ cc2 = "cc2";
 {
 	let cc1 = 1;
 	var cc2 = 2;
-	debug(cc1, cc2);
+	debug(cc1);
+	debug(cc2);
 }
-debug(cc1, cc2);
+debug(cc1);
+debug(cc2);
 
 //callback
 function f(callback, s) {
