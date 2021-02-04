@@ -40,6 +40,7 @@ arr[10] = "hhh";
 arr[11] = {
   foobar: 10
 };
+debug(arr);
 
 //var and let
 cc1 = "cc1";
