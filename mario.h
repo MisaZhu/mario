@@ -13,7 +13,8 @@ extern "C" {
 typedef enum bool_enum {false, true} bool;
 #endif
 
-/** memory functions.-----------------------------*/
+/**====== memory functions.======*/
+
 #ifndef MARIO_DEBUG
 	#define _malloc malloc
 	#define _free free
@@ -45,9 +46,8 @@ extern void _free_none(void*p);
 extern void (*_out_func)(const char*);
 void mario_debug(const char* s);
 
-/**
-array functions.
-*/
+/**====== array functions. ======*/
+
 typedef struct st_array {
 	void** items;
 	uint32_t max: 16;
@@ -70,10 +70,8 @@ void array_remove_all(m_array_t* array);
 void array_clean(m_array_t* array, free_func_t fr);
 #define array_tail(array) (((array)->items == NULL || (array)->size == 0) ? NULL: (array)->items[(array)->size-1]);
 
+/**====== string functions. ======*/
 
-/**
-string functions.
-*/
 typedef struct st_str {
 	char* cstr;
 	uint32_t max: 16;
@@ -99,9 +97,7 @@ void str_split(const char* str, char c, m_array_t* array);
 int str_to(const char* str, char c, str_t* res, bool skipspace);
 
 
-/**
-utf8 string functions
-*/
+/**======utf8 string functions =======*/
 
 typedef struct st_utf8_reader {
 	const char* str;
@@ -123,7 +119,7 @@ void utf8_set(utf8_t* utf8, uint32_t at, const char* s);
 void utf8_to_str(utf8_t* utf8, str_t* str);
 
 
-/** Script Lex. -----------------------------*/
+/**====== Script Lex. =======*/ 
 
 typedef enum {
 	LEX_EOF  =  0,
@@ -186,7 +182,7 @@ void lex_get_basic_token(lex_t* lex);
 
 void lex_get_pos(lex_t* lex, int* line, int *col, int pos);
 
-/**----- MARIO_BC --------*/
+/**====== MARIO_BC ======*/
 
 //bytecode
 typedef uint32_t PC;
@@ -339,7 +335,7 @@ void bc_init(bytecode_t* bc);
 void bc_release(bytecode_t* bc);
 
 
-/**------mario_vm.h-------*/
+/**====== mario_vm ======*/
 
 extern const char* _mario_lang;
 bool compile(bytecode_t *bc, const char* input);

@@ -1619,8 +1619,6 @@ void var_array_del(var_t* var, int32_t index) {
 	array_del(&arr_var->children, index, node_free);
 }
 
-void func_free(void* p);
-
 inline void var_clean(var_t* var) {
 	if(var_empty(var))
 		return;
@@ -1875,7 +1873,7 @@ static inline void gc(vm_t* vm) {
 	vm->is_doing_gc = false;
 }
 
-const char* get_typeof(var_t* var) {
+static const char* get_typeof(var_t* var) {
 	switch(var->type) {
 		case V_UNDEF:
 			return "undefined";
@@ -2053,7 +2051,7 @@ inline func_t* var_get_func(var_t* var) {
 	return (func_t*)var->value;
 }
 
-void get_m_str(const char* str, str_t* ret) {
+static void get_m_str(const char* str, str_t* ret) {
 	str_reset(ret);
 	str_add(ret, '"');
 	/*
@@ -2105,7 +2103,7 @@ void var_to_str(var_t* var, str_t* ret) {
 	}
 }
 
-void get_parsable_str(var_t* var, str_t* ret) {
+static void get_parsable_str(var_t* var, str_t* ret) {
 	str_reset(ret);
 
 	str_t* s = str_new("");
@@ -2118,7 +2116,7 @@ void get_parsable_str(var_t* var, str_t* ret) {
 	str_free(s);
 }
 
-void append_json_spaces(str_t* ret, int level) {
+static void append_json_spaces(str_t* ret, int level) {
 	int spaces;
 	for (spaces = 0; spaces<=level; ++spaces) {
         str_add(ret, ' '); str_add(ret, ' ');
@@ -2256,7 +2254,7 @@ static inline void vm_load_basic_classes(vm_t* vm) {
 
 #ifdef MARIO_CACHE
 
-void var_cache_init(vm_t* vm) {
+static void var_cache_init(vm_t* vm) {
 	uint32_t i;
 	for(i=0; i<vm->var_cache_used; ++i) {
 		vm->var_cache[i] = NULL;
@@ -2264,7 +2262,7 @@ void var_cache_init(vm_t* vm) {
 	vm->var_cache_used = 0;	
 }
 
-void var_cache_free(vm_t* vm) {
+static void var_cache_free(vm_t* vm) {
 	uint32_t i;
 	for(i=0; i<vm->var_cache_used; ++i) {
 		var_t* v = vm->var_cache[i];
@@ -2274,7 +2272,8 @@ void var_cache_free(vm_t* vm) {
 	vm->var_cache_used = 0;	
 }
 
-int32_t var_cache(vm_t* vm, var_t* v) {
+/*
+static int32_t var_cache(vm_t* vm, var_t* v) {
 	if(vm->var_cache_used >= VAR_CACHE_MAX)
 		return -1;
 	vm->var_cache[vm->var_cache_used] = var_ref(v);
@@ -2282,7 +2281,7 @@ int32_t var_cache(vm_t* vm, var_t* v) {
 	return vm->var_cache_used-1;
 }
 
-bool try_cache(vm_t* vm, PC* ins, var_t* v) {
+static bool try_cache(vm_t* vm, PC* ins, var_t* v) {
 	if((*ins) & INSTR_OPT_CACHE) {
 		int index = var_cache(vm, v); 
 		if(index >= 0) 
@@ -2293,6 +2292,7 @@ bool try_cache(vm_t* vm, PC* ins, var_t* v) {
 	*ins = (*ins) | INSTR_OPT_CACHE;
 	return false;
 }
+*/
 
 #endif
 
@@ -2392,7 +2392,7 @@ static inline node_t* vm_pop2node(vm_t* vm) {
 	return (node_t*)p;
 }
 
-var_t* vm_stack_pick(vm_t* vm, int depth) {
+static var_t* vm_stack_pick(vm_t* vm, int depth) {
 	int index = vm->stack_top - depth;
 	if(index < 0)
 		return NULL;
@@ -2442,7 +2442,7 @@ static inline var_t* vm_get_scope_var(vm_t* vm) {
 }
 
 
-scope_t* scope_new(var_t* var) {
+static scope_t* scope_new(var_t* var) {
 	scope_t* sc = (scope_t*)_malloc(sizeof(scope_t));
 	sc->prev = NULL;
 
@@ -2457,7 +2457,7 @@ scope_t* scope_new(var_t* var) {
 	return sc;
 }
 
-scope_t* scope_clone(scope_t* src) {
+/*static scope_t* scope_clone(scope_t* src) {
 	scope_t* sc = (scope_t*)_malloc(sizeof(scope_t));
 	memcpy(sc, src, sizeof(scope_t));
 	if(src->var != NULL)
@@ -2465,8 +2465,9 @@ scope_t* scope_clone(scope_t* src) {
 	sc->prev = NULL;
 	return sc;
 }
+*/
 
-void scope_free(void* p) {
+static void scope_free(void* p) {
 	scope_t* sc = (scope_t*)p;
 	if(sc == NULL)
 		return;
@@ -2487,7 +2488,7 @@ void scope_free(void* p) {
 })
 */
 
-void vm_push_scope(vm_t* vm, scope_t* sc) {
+static void vm_push_scope(vm_t* vm, scope_t* sc) {
 	scope_t* prev = NULL;
 	if(vm->scopes->size > 0)
 		prev = (scope_t*)array_tail(vm->scopes);
@@ -2495,7 +2496,7 @@ void vm_push_scope(vm_t* vm, scope_t* sc) {
 	sc->prev = prev;
 }
 
-PC vm_pop_scope(vm_t* vm) {
+static PC vm_pop_scope(vm_t* vm) {
 	if(vm->scopes->size <= 0)
 		return 0;
 
@@ -2509,18 +2510,6 @@ PC vm_pop_scope(vm_t* vm) {
 	array_del(vm->scopes, vm->scopes->size-1, scope_free);
 	gc(vm);
 	return pc;
-}
-
-void vm_stack_free(vm_t* vm, void* p) {
-	int8_t magic = *(int8_t*)p;
-	if(magic == 1) {//node
-		node_t* node = (node_t*)p;
-		node_free(node);
-	}
-	else {
-		var_t* var = (var_t*)p;
-		var_unref(var);
-	}
 }
 
 node_t* vm_find(vm_t* vm, const char* name) {
@@ -2689,7 +2678,7 @@ void var_instance_from(var_t* var, var_t* src) {
 	var_from_prototype(var, proto);
 }
 
-void var_set_father(var_t* var, var_t* father) {
+static void var_set_father(var_t* var, var_t* father) {
 	if(var == NULL)
 		return;
 
@@ -2730,7 +2719,7 @@ static inline var_t* var_build_basic_prototype(vm_t* vm, var_t* var) {
 }
 
 //for function.
-func_t* func_new() {
+static func_t* func_new() {
 	func_t* func = (func_t*)_malloc(sizeof(func_t));
 	if(func == NULL)
 		return NULL;
@@ -2744,13 +2733,13 @@ func_t* func_new() {
 	return func;
 }
 
-void func_free(void* p) {
+static void func_free(void* p) {
 	func_t* func = (func_t*)p;
 	array_clean(&func->args, NULL);
 	_free(p);
 }
 
-var_t* var_new_func(vm_t* vm, func_t* func) {
+static var_t* var_new_func(vm_t* vm, func_t* func) {
 	var_t* var = var_new_obj(vm, NULL, NULL);
 	var->is_func = 1;
 	var->free_func = func_free;
@@ -2762,7 +2751,7 @@ var_t* var_new_func(vm_t* vm, func_t* func) {
 	return var;
 }
 
-var_t* find_func(vm_t* vm, var_t* obj, const char* fname) {
+static var_t* find_func(vm_t* vm, var_t* obj, const char* fname) {
 	//try full name with arg_num
 	node_t* node = NULL;
 	if(obj != NULL) {
@@ -2778,11 +2767,11 @@ var_t* find_func(vm_t* vm, var_t* obj, const char* fname) {
 	return NULL;
 }
 
-var_t* func_get_closure(var_t* var) {
+static var_t* func_get_closure(var_t* var) {
 	return get_obj(var, CLOSURE);
 }
 
-void func_mark_closure(vm_t* vm, var_t* func) { //try mark function closure
+static void func_mark_closure(vm_t* vm, var_t* func) { //try mark function closure
 	if(vm->scopes->size <=0)
 		return;
 	if(func_get_closure(func) != NULL)
@@ -2804,7 +2793,7 @@ void func_mark_closure(vm_t* vm, var_t* func) { //try mark function closure
 		var_unref(closure); //not a closure.
 }
 
-bool func_call(vm_t* vm, var_t* obj, var_t* func_var, int arg_num) {
+static bool func_call(vm_t* vm, var_t* obj, var_t* func_var, int arg_num) {
 	var_t *env = var_new_obj(vm, NULL, NULL);
 	var_t* args = var_new_array(vm);
 	var_add(env, "arguments", args);
@@ -2878,7 +2867,7 @@ bool func_call(vm_t* vm, var_t* obj, var_t* func_var, int arg_num) {
 	return true;
 }
 
-var_t* func_def(vm_t* vm, bool regular, bool is_static) {
+static var_t* func_def(vm_t* vm, bool regular, bool is_static) {
 	func_t* func = func_new();
 	func->regular = regular;
 	func->is_static = is_static;
@@ -3218,7 +3207,7 @@ void do_get(vm_t* vm, var_t* v, const char* name) {
 	vm_push_node(vm, n);
 }
 
-void doExtends(vm_t* vm, var_t* cls_var, const char* super_name) {
+static void do_extends(vm_t* vm, var_t* cls_var, const char* super_name) {
 	node_t* n = vm_find_in_scopes(vm, super_name);
 	if(n == NULL) {
 		mario_debug("Super Class '");
@@ -3262,7 +3251,7 @@ var_t* new_obj(vm_t* vm, const char* name, int arg_num) {
 	return obj;
 }
 
-int parse_func_name(const char* full, str_t* name) {
+static int parse_func_name(const char* full, str_t* name) {
 	const char* pos = strchr(full, '$');
 	int args_num = 0;
 	if(pos != NULL) {
@@ -3278,7 +3267,7 @@ int parse_func_name(const char* full, str_t* name) {
 }
 
 /** create object and try constructor */
-bool do_new(vm_t* vm, const char* full) {
+static bool do_new(vm_t* vm, const char* full) {
 	str_t* name = str_new("");
 	int arg_num = parse_func_name(full, name);
 
@@ -4181,7 +4170,7 @@ bool vm_run(vm_t* vm) {
 					vm->pc++;
 					offset = OFF(ins);
 					s =  bc_getstr(&vm->bc, offset);
-					doExtends(vm, cls_var, s);
+					do_extends(vm, cls_var, s);
 				}
 
 				var_t* protoV = var_get_prototype(cls_var);
@@ -4290,7 +4279,6 @@ typedef struct st_native_init {
 	void (*func)(void*);
 	void *data;
 } native_init_t;
-
 
 void vm_dump(vm_t* vm) {
 #ifdef MARIO_DEBUG
@@ -4496,7 +4484,15 @@ const char* get_func_arg_str(var_t* env, uint32_t index) {
 	return var_get_str(get_func_arg(env, index));
 }
 
-var_t* native_debug(vm_t* vm, var_t* env, void* data) {
+vm_t* vm_from(vm_t* vm) {
+	vm_t* ret = vm_new(vm->compiler);
+	ret->gc_buffer_size = vm->gc_buffer_size;
+	ret->gc_free_buffer_size = vm->gc_free_buffer_size;
+  vm_init(ret, vm->on_init, vm->on_close);
+	return ret;
+}
+
+static var_t* native_debug(vm_t* vm, var_t* env, void* data) {
 	(void)vm; (void)data;
 
 	var_t* args = get_func_args(env); 
@@ -4521,19 +4517,10 @@ var_t* native_debug(vm_t* vm, var_t* env, void* data) {
 }
 
 /**yield */
-var_t* native_yield(vm_t* vm, var_t* env, void* data) {
+static var_t* native_yield(vm_t* vm, var_t* env, void* data) {
 	(void)vm; (void)data; (void)env;
 	return NULL;
 }
-
-vm_t* vm_from(vm_t* vm) {
-	vm_t* ret = vm_new(vm->compiler);
-	ret->gc_buffer_size = vm->gc_buffer_size;
-	ret->gc_free_buffer_size = vm->gc_free_buffer_size;
-  vm_init(ret, vm->on_init, vm->on_close);
-	return ret;
-}
-
 #define GC_BUFFER 128
 #define GC_FREE_BUFFER 128
 vm_t* vm_new(bool compiler(bytecode_t *bc, const char* input)) {
