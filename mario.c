@@ -101,10 +101,7 @@ void mario_mem_init() {
 void mario_mem_close() { 
 	mem_lock();
 	mem_block_t* block = _mem_head;	
-	if(block == NULL) { // mem clean
-		mario_debug("memory is cleaned up.\n");
-	}
-	else {
+	if(block != NULL) { // mem clean
 		mario_debug("memory is leaking!!!\n");
 		while(block != NULL) {
 			mario_debug(" ");

@@ -10,7 +10,7 @@
 #define ERR_MAX 1023
 char _err_info[ERR_MAX+1];
 
-bool load_script(vm_t* vm, const char* fname, bool verify) {
+bool load_script(vm_t* vm, const char* fname) {
 	int fd = open(fname, O_RDONLY);
 	if(fd < 0) {
 		snprintf(_err_info, ERR_MAX, "Can not open file '%s'\n", fname);
@@ -26,13 +26,8 @@ bool load_script(vm_t* vm, const char* fname, bool verify) {
 	close(fd);
 	s[st.st_size] = 0;
 
-	bool ret;
-	if(verify)
-		ret = vm_load(vm, s);
-	else
-		ret = vm_load_run(vm, s);
+	bool ret = vm_load(vm, s);
 	_free(s);
-
 	return ret;
 }
 
@@ -63,11 +58,6 @@ int main(int argc, char** argv) {
 		verify = true;
 		fname = argv[2];
 	}
-	else if(strcmp(argv[1], "-d") == 0) {
-		if(argc != 3)
-			return 1;
-		fname = argv[2];
-	}
 	else {
 		fname = argv[1];
 	}
@@ -79,9 +69,11 @@ int main(int argc, char** argv) {
 	vm_reg_static(vm, "", "print(s)", native_print, NULL);
 
 	if(fname[0] != 0) {
-		if(load_script(vm, fname, verify)) {
+		if(load_script(vm, fname)) {
 			if(verify)
 				vm_dump(vm);
+			else
+				vm_run(vm);
 		}
 	}
 
