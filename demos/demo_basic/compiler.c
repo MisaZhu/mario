@@ -205,9 +205,9 @@ bool statement(lex_t* l, bytecode_t* bc) {
 		if(!lex_chkread(l, '\n')) return false;
 	}
 	else {
-			_err("Error: don't understand '");
-			_err(l->tk_str->cstr);
-			_err("'!\n");
+			mario_debug("Error: don't understand '");
+			mario_debug(l->tk_str->cstr);
+			mario_debug("'!\n");
 			return false;
 	}
 

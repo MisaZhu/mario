@@ -14,7 +14,7 @@ bool load_script(vm_t* vm, const char* fname, bool verify) {
 	int fd = open(fname, O_RDONLY);
 	if(fd < 0) {
 		snprintf(_err_info, ERR_MAX, "Can not open file '%s'\n", fname);
-		_err(_err_info);
+		mario_debug(_err_info);
 		return false;
 	}
 
@@ -53,7 +53,7 @@ int main(int argc, char** argv) {
 	const char* fname = "";
 
 	if(argc < 2) {
-		_err("Usage: demo [source_file]!\n");
+		mario_debug("Usage: demo [source_file]!\n");
 		return 1;
 	}
 
@@ -66,14 +66,13 @@ int main(int argc, char** argv) {
 	else if(strcmp(argv[1], "-d") == 0) {
 		if(argc != 3)
 			return 1;
-		_debug_mode = true;
 		fname = argv[2];
 	}
 	else {
 		fname = argv[1];
 	}
 
-	_mem_init();
+	mario_mem_init();
 	
 	vm_t* vm = vm_new(compile);
 	vm_init(vm, NULL, NULL);
@@ -87,6 +86,6 @@ int main(int argc, char** argv) {
 	}
 
 	vm_close(vm);
-	_mem_close();
+	mario_mem_close();
 	return 0;
 }

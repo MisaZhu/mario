@@ -32,8 +32,8 @@ typedef enum bool_enum {false, true} bool;
 	extern void _free(void *p);
 #endif
 
-extern void _mem_init(void);
-extern void _mem_close(void);
+extern void mario_mem_init(void);
+extern void mario_mem_close(void);
 extern void* _raw_realloc(void* p, uint32_t old_size, uint32_t new_size, const char* file, uint32_t line);
 #define _realloc(p, old_size, new_size) _raw_realloc(p, old_size, new_size, __FILE__, __LINE__)
 
@@ -43,9 +43,7 @@ typedef void (*free_func_t)(void* p);
 extern void _free_none(void*p);
 
 extern void (*_out_func)(const char*);
-extern bool _debug_mode;
-void _debug(const char* s);
-void _err(const char* s);
+void mario_debug(const char* s);
 
 /**
 array functions.
