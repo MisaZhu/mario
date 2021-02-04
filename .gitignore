@@ -1,4 +1,4 @@
 *.o
 *.swp
 .DS_*
-demo/demo
+demo
