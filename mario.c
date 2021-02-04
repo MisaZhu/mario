@@ -2,12 +2,15 @@
 #include <stdlib.h>
 #include <stdio.h>
 
+#ifdef MRCIO_THREAD
+#include <pthread.h>
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-void _free_none(void* p) { (void)p; }
-
+/**======debug functions======*/
 void default_out(const char* s) {
 	printf("%s", s);
 }
@@ -24,15 +27,36 @@ void _err(const char* s) {
 	_out_func(s);
 }
 
-//#ifdef MARIO_DEBUG
-/*mem_block_t* _mem_head = NULL;
-pthread_mutex_t _mem_lock;
+#ifdef MARIO_DEBUG
+static mem_block_t* _mem_head = NULL;
+
+#ifdef MARIO_THREAD
+static pthread_mutex_t _mem_lock;
+static inline void mem_lock_init() {
+	pthread_mutex_init(&_mem_lock, NULL);
+}
+static inline void mem_lock_destroy() {
+	pthread_mutex_destroy(&_mem_lock);
+}
+static inline void mem_lock() {
+	pthread_mutex_lock(&_mem_lock);
+}
+static inline void mem_unlock() {
+	pthread_mutex_unlock(&_mem_lock);
+}
+
+#else
+static inline void mem_lock_destroy() { }
+static inline void mem_lock_init() { }
+static inline void mem_lock() { }
+static inline void mem_unlock() { }
+#endif
 
 inline void* _raw_malloc(uint32_t size, const char* file, uint32_t line) {
 	if(size == 0)
 		return NULL;
 
-	pthread_mutex_lock(&_mem_lock);
+	mem_lock();
 	mem_block_t* block = (mem_block_t*)malloc(sizeof(mem_block_t));
 	block->p = malloc(size);
 	block->size = size;
@@ -44,12 +68,12 @@ inline void* _raw_malloc(uint32_t size, const char* file, uint32_t line) {
 		_mem_head->prev = block;
 	block->next = _mem_head;
 	_mem_head = block;
-	pthread_mutex_unlock(&_mem_lock);
+	mem_unlock();
 	return block->p;
 }
 
 inline void _free(void* p) {
-	pthread_mutex_lock(&_mem_lock);
+	mem_lock();
 	mem_block_t* block = _mem_head;	
 	while(block != NULL) {
 		if(block->p == p) // found.
@@ -58,7 +82,7 @@ inline void _free(void* p) {
 	}
 
 	if(block == NULL) {
-		pthread_mutex_unlock(&_mem_lock);
+		mem_unlock();
 		return;
 	}
 	
@@ -72,16 +96,16 @@ inline void _free(void* p) {
 
 	free(block->p);
 	free(block);
-	pthread_mutex_unlock(&_mem_lock);
+	mem_unlock();
 }
 
 void _mem_init() { 
 	_mem_head = NULL;	
-	pthread_mutex_init(&_mem_lock, NULL);
+	mem_lock_init();
 }
 
 void _mem_close() { 
-	pthread_mutex_lock(&_mem_lock);
+	mem_lock();
 	mem_block_t* block = _mem_head;	
 	if(block == NULL) { // mem clean
 		_debug("memory is cleaned up.\n");
@@ -89,20 +113,18 @@ void _mem_close() {
 	else {
 		_debug("memory is leaking!!!\n");
 		while(block != NULL) {
-			char tmp[STATIC_STR_MAX];
 			_debug(" ");
 			_debug(block->file);
 			_debug(", ");
-			_debug(str_from_int(block->line, tmp, 10));
+			_debug(str_from_int(block->line, 10));
 			_debug(", size=");
-			_debug(str_from_int(block->size, tmp, 10));
+			_debug(str_from_int(block->size, 10));
 			_debug("\n");
 			block = block->next;
 		}
 	}
-	pthread_mutex_unlock(&_mem_lock);
-
-	pthread_mutex_destroy(&_mem_lock);
+	mem_unlock();
+	mem_lock_destroy();
 }
 
 void *_raw_realloc(void* p, uint32_t old_size, uint32_t new_size, const char* file, uint32_t line) {
@@ -113,8 +135,7 @@ void *_raw_realloc(void* p, uint32_t old_size, uint32_t new_size, const char* fi
 	}
 	return np;
 }
-*/
-//#else
+#else
 
 void _mem_init() { }
 void _mem_close() { }
@@ -127,8 +148,9 @@ void *_raw_realloc(void* p, uint32_t old_size, uint32_t new_size, const char* fi
 	}
 	return np;
 }
+#endif
 
-/** array functions.-----------------------------*/
+/**======array functions======*/
 
 #define ARRAY_BUF 16
 
@@ -255,7 +277,7 @@ inline void array_clean(m_array_t* array, free_func_t fr) { //remove all items a
 	array->max = array->size = 0;
 }
 
-/** str functions.-----------------------------*/
+/**======string functions======*/
 
 #define STR_BUF 16
 
@@ -475,6 +497,8 @@ int str_to(const char* str, char c, str_t* res, bool skipspace) {
 	return i;
 }
 
+/**======utf8 functions======*/
+
 #define isASCII(b)  ((b & 0x80) == 0)
 
 void utf8_reader_init(utf8_reader_t* reader, const char* s, uint32_t offset) {
@@ -610,7 +634,7 @@ void utf8_to_str(utf8_t* utf8, str_t* str) {
 	}
 }
 
-/**------mario_lex--------*/
+/**======lex functions======*/
 
 bool is_whitespace(unsigned char ch) {
 	if(ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r')
@@ -1053,7 +1077,7 @@ var_t* json_parse(vm_t* vm, const char* str) {
 	return ret;
 }
 
-/** bytecode.-----------------------------*/
+/**======bytecode functions======*/
 
 #define BC_BUF_SIZE  3232
 
@@ -1374,7 +1398,7 @@ void bc_dump(bytecode_t* bc) {
 }
 #endif
 
-/** vm var-----------------------------*/
+/**======var functions======*/
 load_m_func_t _load_m_func = NULL;
 
 node_t* node_new(vm_t* vm, const char* name) {
@@ -2286,8 +2310,7 @@ bool try_cache(vm_t* vm, PC* ins, var_t* v) {
 
 #endif
 
-
-/** Interpreter-----------------------------*/
+/**======Interrupt functions======*/
 
 inline void vm_push(vm_t* vm, var_t* var) {  
 	var_ref(var);
@@ -4328,7 +4351,7 @@ void vm_close(vm_t* vm) {
 	_free(vm);
 }	
 
-/** native extended functions.-----------------------------*/
+/**======native extends functions======*/
 
 void vm_reg_init(vm_t* vm, void (*func)(void*), void* data) {
 	native_init_t* it = (native_init_t*)_malloc(sizeof(native_init_t));

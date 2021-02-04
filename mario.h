@@ -14,11 +14,10 @@ typedef enum bool_enum {false, true} bool;
 #endif
 
 /** memory functions.-----------------------------*/
-//#ifndef MARIO_DEBUG
+#ifndef MARIO_DEBUG
 	#define _malloc malloc
 	#define _free free
-//#else
-	/*#include <pthread.h>
+#else
 	typedef struct mem_block {
 		void* p;
 		uint32_t size;
@@ -28,13 +27,10 @@ typedef enum bool_enum {false, true} bool;
 		struct mem_block *next;
 	} mem_block_t;
 
-	extern mem_block_t* _mem_head;
-	extern pthread_mutex_t _mem_lock;
-
 	extern void* _raw_malloc(uint32_t size, const char* file, uint32_t line);
 	#define _malloc(size) _raw_malloc((size), __FILE__, __LINE__)
-	extern void _free(void *p);*/
-//#endif
+	extern void _free(void *p);
+#endif
 
 extern void _mem_init(void);
 extern void _mem_close(void);
@@ -44,7 +40,6 @@ extern void* _raw_realloc(void* p, uint32_t old_size, uint32_t new_size, const c
 #define STATIC_STR_MAX 32
 
 typedef void (*free_func_t)(void* p);
-
 extern void _free_none(void*p);
 
 extern void (*_out_func)(const char*);
