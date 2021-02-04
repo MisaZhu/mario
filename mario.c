@@ -1339,7 +1339,7 @@ PC bc_get_instr_str(bytecode_t* bc, PC i, str_t* ret) {
 	
 	if(instr == INSTR_INT) {
 		ins = bc->code_buf[i+1];
-		snprintf(s, 128, "\n%08d | 0x%08X ; (%d)", i+1, ins, ins);	
+		snprintf(s, 128, "\n%08d | 0x%08X ; %d", i+1, ins, ins);	
 		str_append(ret, s);
 		i++;
 	}
@@ -1347,7 +1347,7 @@ PC bc_get_instr_str(bytecode_t* bc, PC i, str_t* ret) {
 		ins = bc->code_buf[i+1];
 		float f;
 		memcpy(&f, &ins, sizeof(PC));
-		snprintf(s, 128, "\n%08d | 0x%08X ; (%f)", i+1, ins, f);	
+		snprintf(s, 128, "\n%08d | 0x%08X ; %f", i+1, ins, f);	
 		str_append(ret, s);
 		i++;
 	}	
