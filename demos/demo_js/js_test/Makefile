@@ -7,10 +7,10 @@ CXX := $(CROSS_COMPILE)g++
 AR := $(CROSS_COMPILE)ar
 LD := $(CROSS_COMPILE)gcc
 
-MARIO_VM = ../..
+MARIO_VM = ../../..
 mario_OBJS= $(MARIO_VM)/mario.o
 
-lang_OBJS = compiler.o
+lang_OBJS = ../compiler.o
 
 OBJS = demo.o $(mario_OBJS) $(lang_OBJS)
 
