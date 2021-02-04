@@ -230,6 +230,7 @@ bool compile(bytecode_t *bc, const char* input) {
 	bool ret = true;
 	array_init(&_lines);
 	array_init(&_gotos);
+	bc_gen(bc, INSTR_NIL);
 
 	lex_t lex;
 	lex_init(&lex, input);
