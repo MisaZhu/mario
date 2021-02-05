@@ -19,15 +19,6 @@ typedef enum bool_enum {false, true} bool;
 	#define _malloc malloc
 	#define _free free
 #else
-	typedef struct mem_block {
-		void* p;
-		uint32_t size;
-		const char* file;
-		uint32_t line;
-		struct mem_block *prev;
-		struct mem_block *next;
-	} mem_block_t;
-
 	extern void* _raw_malloc(uint32_t size, const char* file, uint32_t line);
 	#define _malloc(size) _raw_malloc((size), __FILE__, __LINE__)
 	extern void _free(void *p);
@@ -41,8 +32,6 @@ extern void* _raw_realloc(void* p, uint32_t old_size, uint32_t new_size, const c
 #define STATIC_STR_MAX 32
 
 typedef void (*free_func_t)(void* p);
-extern void _free_none(void*p);
-
 extern void (*_out_func)(const char*);
 void mario_debug(const char* s);
 

@@ -22,6 +22,15 @@ inline void mario_debug(const char* s) {
 }
 
 #ifdef MARIO_DEBUG
+typedef struct mem_block {
+	void* p;
+	uint32_t size;
+	const char* file;
+	uint32_t line;
+	struct mem_block *prev;
+	struct mem_block *next;
+} mem_block_t;
+
 static mem_block_t* _mem_head = NULL;
 
 #ifdef MARIO_THREAD
