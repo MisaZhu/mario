@@ -1387,7 +1387,28 @@ void bc_dump(bytecode_t* bc) {
 /**======var functions======*/
 load_m_func_t _load_m_func = NULL;
 
-node_t* node_new(vm_t* vm, const char* name) {
+static var_t* var_clone(var_t* v) {
+	switch(v->type) { //basic types
+		case V_INT:
+			return var_new_int(v->vm, var_get_int(v));
+		case V_FLOAT:
+			return var_new_float(v->vm, var_get_int(v));
+		case V_STRING:
+			return var_new_str(v->vm, var_get_str(v));
+		/*case V_BOOL:
+			return var_new_bool(v->vm, var_get_bool(v));
+		case V_NULL:
+			return var_new_null(v->vm);
+		case V_UNDEF:
+			return var_new(v->vm);*/
+		default:
+			break;
+	}
+	//object types
+	return v; 
+}
+
+node_t* node_new(vm_t* vm, const char* name, var_t* var) {
 	node_t* node = (node_t*)_malloc(sizeof(node_t));
 	memset(node, 0, sizeof(node_t));
 
@@ -1395,7 +1416,10 @@ node_t* node_new(vm_t* vm, const char* name) {
 	uint32_t len = (uint32_t)strlen(name);
 	node->name = (char*)_malloc(len+1);
 	memcpy(node->name, name, len+1);
-	node->var = var_new(vm);	
+	if(var != NULL)
+		node->var = var_ref(var_clone(var));
+	else
+		node->var = var_ref(var_new(vm));
 	return node;
 }
 
@@ -1421,27 +1445,6 @@ static inline bool node_empty(node_t* node) {
 	if(node == NULL || var_empty(node->var))
 		return true;
 	return false;
-}
-
-static var_t* var_clone(var_t* v) {
-	switch(v->type) { //basic types
-		case V_INT:
-			return var_new_int(v->vm, var_get_int(v));
-		case V_FLOAT:
-			return var_new_float(v->vm, var_get_int(v));
-		case V_STRING:
-			return var_new_str(v->vm, var_get_str(v));
-		/*case V_BOOL:
-			return var_new_bool(v->vm, var_get_bool(v));
-		case V_NULL:
-			return var_new_null(v->vm);
-		case V_UNDEF:
-			return var_new(v->vm);*/
-		default:
-			break;
-	}
-	//object types
-	return v; 
 }
 
 inline var_t* node_replace(node_t* node, var_t* v) {
@@ -1480,33 +1483,17 @@ node_t* var_add(var_t* var, const char* name, var_t* add) {
 		node = var_find_raw(var, name);
 
 	if(node == NULL) {
-		node = node_new(var->vm, name);
-		var_ref(node->var);
+		node = node_new(var->vm, name, add);
 		array_add(&var->children, node);
 	}
-
-	if(add != NULL)
+	else if(add != NULL)
 		node_replace(node, add);
 
 	return node;
 }
 
 node_t* var_add_head(var_t* var, const char* name, var_t* add) {
-	node_t* node = NULL;
-
-	if(name[0] != 0) 
-		node = var_find_raw(var, name);
-
-	if(node == NULL) {
-		node = node_new(var->vm, name);
-		var_ref(node->var);
-		array_add(&var->children, node);
-	}
-
-	if(add != NULL)
-		node_replace(node, add);
-
-	return node;
+	return var_add(var, name, add);
 }
 
 inline node_t* var_find(var_t* var, const char*name) {
@@ -3198,7 +3185,7 @@ void do_get(vm_t* vm, var_t* v, const char* name) {
 			mario_debug("Can not get member '");
 			mario_debug(name);
 			mario_debug("'!\n");
-			n = node_new(vm, name);
+			n = node_new(vm, name, NULL);
 			vm_push(vm, var_new(vm));
 			return;
 		}

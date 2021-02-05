@@ -479,7 +479,7 @@ typedef struct st_vm {
 typedef str_t* (*load_m_func_t)(struct st_vm *, const char* jsname);
 extern load_m_func_t _load_m_func;
 
-node_t* node_new(vm_t* vm, const char* name);
+node_t* node_new(vm_t* vm, const char* name, var_t* var);
 void node_free(void* p);
 var_t* node_replace(node_t* node, var_t* v);
 
