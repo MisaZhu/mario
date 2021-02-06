@@ -543,12 +543,13 @@ void vm_dump(vm_t* vm);
 bool vm_run(vm_t* vm);
 void vm_close(vm_t* vm);
 
+var_t* vm_new_class(vm_t* vm, const char* cls);
 var_t* new_obj(vm_t* vm, const char* cls_name, int arg_num);
 node_t* vm_find(vm_t* vm, const char* name);
 node_t* vm_find_in_class(var_t* var, const char* name);
-node_t* vm_reg_var(vm_t* vm, const char* cls, const char* name, var_t* var, bool be_const);
-node_t* vm_reg_static(vm_t* vm, const char* cls, const char* decl, native_func_t native, void* data);
-node_t* vm_reg_native(vm_t* vm, const char* cls, const char* decl, native_func_t native, void* data);
+node_t* vm_reg_var(vm_t* vm, var_t* cls, const char* name, var_t* var, bool be_const);
+node_t* vm_reg_static(vm_t* vm, var_t* cls, const char* decl, native_func_t native, void* data);
+node_t* vm_reg_native(vm_t* vm, var_t* cls, const char* decl, native_func_t native, void* data);
 void vm_mark_func_scopes(vm_t* vm, var_t* func);
 void vm_reg_init(vm_t* vm, void (*func)(void*), void* data);
 void vm_reg_close(vm_t* vm, void (*func)(void*), void* data);

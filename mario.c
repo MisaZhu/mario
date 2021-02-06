@@ -4337,11 +4337,10 @@ void vm_reg_close(vm_t* vm, void (*func)(void*), void* data) {
 	array_add(&vm->close_natives, it);
 }
 
-node_t* vm_reg_var(vm_t* vm, const char* cls, const char* name, var_t* var, bool be_const) {
+node_t* vm_reg_var(vm_t* vm, var_t* cls, const char* name, var_t* var, bool be_const) {
 	var_t* cls_var = vm->root;
-	if(cls[0] != 0) {
-		cls_var = vm_new_class(vm, cls);
-		cls_var = var_get_prototype(cls_var);
+	if(cls != NULL) {
+		cls_var = var_get_prototype(cls);
 	}
 
 	node_t* node = var_add(cls_var, name, var);
@@ -4349,11 +4348,10 @@ node_t* vm_reg_var(vm_t* vm, const char* cls, const char* name, var_t* var, bool
 	return node;
 }
 
-node_t* vm_reg_native(vm_t* vm, const char* cls, const char* decl, native_func_t native, void* data) {
+node_t* vm_reg_native(vm_t* vm, var_t* cls, const char* decl, native_func_t native, void* data) {
 	var_t* cls_var = vm->root;
-	if(cls[0] != 0) {
-		cls_var = vm_new_class(vm, cls);
-		cls_var = var_get_prototype(cls_var);
+	if(cls != NULL) {
+		cls_var = var_get_prototype(cls);
 	}
 
 	str_t* name = str_new("");
@@ -4392,7 +4390,7 @@ node_t* vm_reg_native(vm_t* vm, const char* cls, const char* decl, native_func_t
 	return node;
 }
 
-node_t* vm_reg_static(vm_t* vm, const char* cls, const char* decl, native_func_t native, void* data) {
+node_t* vm_reg_static(vm_t* vm, var_t* cls, const char* decl, native_func_t native, void* data) {
 	node_t* n = vm_reg_native(vm, cls, decl, native, data);
 	func_t* func = var_get_func(n->var);
 	func->is_static = true;
@@ -4566,8 +4564,8 @@ vm_t* vm_new(bool compiler(bytecode_t *bc, const char* input)) {
 	var_ref(vm->var_null);
 
 	vm->var_Object = vm_new_class(vm, "Object");
-	vm_reg_static(vm, "", "yield()", native_yield, NULL);
-	vm_reg_static(vm, "", "debug()", native_debug, NULL);
+	vm_reg_static(vm, NULL, "yield()", native_yield, NULL);
+	vm_reg_static(vm, NULL, "debug()", native_debug, NULL);
 	return vm;
 }
 

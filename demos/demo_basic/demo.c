@@ -66,7 +66,7 @@ int main(int argc, char** argv) {
 	
 	vm_t* vm = vm_new(compile);
 	vm_init(vm, NULL, NULL);
-	vm_reg_static(vm, "", "print(s)", native_print, NULL);
+	vm_reg_static(vm, NULL, "print(s)", native_print, NULL);
 
 	if(fname[0] != 0) {
 		if(load_script(vm, fname)) {
