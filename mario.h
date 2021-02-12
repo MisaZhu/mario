@@ -5,12 +5,16 @@
 #include <string.h>
 #include <stdlib.h>
 
-#ifdef __cplusplus
-extern "C" {
+#ifdef MARIO_THREAD
+#include <pthread.h>
 #endif
 
-#ifndef bool
+#ifndef __cplusplus
 typedef enum bool_enum {false, true} bool;
+#endif
+
+#ifdef __cplusplus
+extern "C" {
 #endif
 
 /**====== memory functions.======*/
