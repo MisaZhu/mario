@@ -5,16 +5,12 @@
 #include <string.h>
 #include <stdlib.h>
 
-#ifdef MARIO_THREAD
-#include <pthread.h>
-#endif
-
-#ifndef __cplusplus
-typedef enum bool_enum {false, true} bool;
-#endif
-
 #ifdef __cplusplus
 extern "C" {
+#endif
+
+#ifndef bool
+typedef enum bool_enum {false, true} bool;
 #endif
 
 /**====== memory functions.======*/
@@ -582,6 +578,13 @@ bool interrupt(vm_t* vm, var_t* obj, var_t* func, const char* msg);
 bool interrupt_by_name(vm_t* vm, var_t* obj, const char* func_name, const char* msg);
 
 extern var_t* json_parse(vm_t* vm, const char* str);
+
+#ifdef __cplusplus
+}
+#endif /* __cplusplus */
+
+#endif
+
 
 #ifdef __cplusplus
 }
