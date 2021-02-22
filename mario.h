@@ -584,10 +584,3 @@ extern var_t* json_parse(vm_t* vm, const char* str);
 #endif /* __cplusplus */
 
 #endif
-
-
-#ifdef __cplusplus
-}
-#endif /* __cplusplus */
-
-#endif
