@@ -4,13 +4,10 @@
 #include <inttypes.h>
 #include <string.h>
 #include <stdlib.h>
+#include <stdbool.h>
 
 #ifdef __cplusplus
 extern "C" {
-#endif
-
-#ifndef bool
-typedef enum bool_enum {false, true} bool;
 #endif
 
 /**====== memory functions.======*/
@@ -29,7 +26,7 @@ extern void mario_mem_close(void);
 extern void* _raw_realloc(void* p, uint32_t old_size, uint32_t new_size, const char* file, uint32_t line);
 #define _realloc(p, old_size, new_size) _raw_realloc(p, old_size, new_size, __FILE__, __LINE__)
 
-#define STATIC_STR_MAX 32
+#define STATIC_mstr_MAX 32
 
 typedef void (*free_func_t)(void* p);
 extern void (*_out_func)(const char*);
@@ -61,29 +58,29 @@ void array_clean(m_array_t* array, free_func_t fr);
 
 /**====== string functions. ======*/
 
-typedef struct st_str {
+typedef struct st_mstr {
 	char* cstr;
 	uint32_t max: 16;
 	uint32_t len: 16;
-} str_t;
+} mstr_t;
 
-void str_reset(str_t* str);
-char* str_ncpy(str_t* str, const char* src, uint32_t l);
-char* str_cpy(str_t* str, const char* src);
-str_t* str_new(const char* s);
-str_t* str_new_by_size(uint32_t sz);
-char* str_append(str_t* str, const char* src);
-char* str_add(str_t* str, char c);
-char* str_add_int(str_t* str, int i, int base);
-char* str_add_float(str_t* str, float f);
-void str_free(str_t* str);
-const char* str_from_int(int i, int base);
-const char* str_from_float(float f);
-const char* str_from_bool(bool b);
-int str_to_int(const char* str);
-float str_to_float(const char* str);
-void str_split(const char* str, char c, m_array_t* array);
-int str_to(const char* str, char c, str_t* res, bool skipspace);
+void mstr_reset(mstr_t* str);
+char* mstr_ncpy(mstr_t* str, const char* src, uint32_t l);
+char* mstr_cpy(mstr_t* str, const char* src);
+mstr_t* mstr_new(const char* s);
+mstr_t* mstr_new_by_size(uint32_t sz);
+char* mstr_append(mstr_t* str, const char* src);
+char* mstr_add(mstr_t* str, char c);
+char* mstr_add_int(mstr_t* str, int i, int base);
+char* mstr_add_float(mstr_t* str, float f);
+void mstr_free(mstr_t* str);
+const char* mstr_from_int(int i, int base);
+const char* mstr_from_float(float f);
+const char* mstr_from_bool(bool b);
+int mstr_to_int(const char* str);
+float mstr_to_float(const char* str);
+void mstr_split(const char* str, char c, m_array_t* array);
+int mstr_to(const char* str, char c, mstr_t* res, bool skipspace);
 
 
 /**======utf8 string functions =======*/
@@ -96,16 +93,16 @@ typedef struct st_utf8_reader {
 typedef m_array_t utf8_t;
 
 void utf8_reader_init(utf8_reader_t* reader, const char* s, uint32_t offset);
-bool utf8_read(utf8_reader_t* reader, str_t* dst);
+bool utf8_read(utf8_reader_t* reader, mstr_t* dst);
 
 utf8_t* utf8_new(const char* s);
 void utf8_free(utf8_t* utf8);
 void utf8_append_raw(utf8_t* utf8, const char* s);
 void utf8_append(utf8_t* utf8, const char* s);
 uint32_t utf8_len(utf8_t* utf8);
-str_t* utf8_at(utf8_t* utf8, uint32_t at);
+mstr_t* utf8_at(utf8_t* utf8, uint32_t at);
 void utf8_set(utf8_t* utf8, uint32_t at, const char* s);
-void utf8_to_str(utf8_t* utf8, str_t* str);
+void utf8_to_str(utf8_t* utf8, mstr_t* str);
 
 
 /**====== Script Lex. =======*/ 
@@ -127,7 +124,7 @@ typedef struct st_lex {
 	char curr_ch, next_ch;
 
 	uint32_t tk;
-	str_t* tk_str;
+	mstr_t* tk_str;
 	int32_t tk_start, tk_end, tk_last_end;
 } lex_t;
 
@@ -178,7 +175,7 @@ typedef uint32_t PC;
 typedef uint16_t opr_code_t;
 typedef struct st_bytecode {
 	PC cindex;
-	m_array_t str_table;
+	m_array_t mstr_table;
 	PC *code_buf;
 	uint32_t buf_size;
 } bytecode_t;
@@ -317,7 +314,7 @@ uint32_t bc_getstrindex(bytecode_t* bc, const char* str);
 PC bc_add_instr(bytecode_t* bc, PC anchor, opr_code_t op, PC target);
 PC bc_reserve(bytecode_t* bc);
 
-#define bc_getstr(bc, i) (((i)>=(bc)->str_table.size) ? "" : (const char*)(bc)->str_table.items[(i)])
+#define bc_getstr(bc, i) (((i)>=(bc)->mstr_table.size) ? "" : (const char*)(bc)->mstr_table.items[(i)])
 
 void bc_dump(bytecode_t* bc);
 void bc_init(bytecode_t* bc);
@@ -400,8 +397,8 @@ typedef struct st_node {
 typedef struct st_isignal {
 	var_t* obj;
 	var_t* handle_func;
-	str_t* handle_func_name;
-	str_t* msg;
+	mstr_t* handle_func_name;
+	mstr_t* msg;
 	struct st_isignal* next;
 	struct st_isignal* prev;
 } isignal_t;
@@ -465,7 +462,7 @@ typedef struct st_vm {
 	uint32_t free_vars_num;
 } vm_t;
 
-typedef str_t* (*load_m_func_t)(struct st_vm *, const char* jsname);
+typedef mstr_t* (*load_m_func_t)(struct st_vm *, const char* jsname);
 extern load_m_func_t _load_m_func;
 
 node_t* node_new(vm_t* vm, const char* name, var_t* var);
@@ -521,8 +518,8 @@ func_t* var_get_func(var_t* var);
 var_t* var_get_prototype(var_t* var);
 bool var_instanceof(var_t* var, var_t* proto);
 
-void var_to_json_str(var_t*, str_t*, int);
-void var_to_str(var_t*, str_t*);
+void var_to_json_str(var_t*, mstr_t*, int);
+void var_to_str(var_t*, mstr_t*);
 
 void vm_push(vm_t* vm, var_t* var);
 void vm_push_node(vm_t* vm, node_t* node);

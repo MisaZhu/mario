@@ -118,9 +118,9 @@ void mario_mem_close() {
 			mario_debug(" ");
 			mario_debug(block->file);
 			mario_debug(", ");
-			mario_debug(str_from_int(block->line, 10));
+			mario_debug(mstr_from_int(block->line, 10));
 			mario_debug(", size=");
-			mario_debug(str_from_int(block->size, 10));
+			mario_debug(mstr_from_int(block->size, 10));
 			mario_debug("\n");
 			block = block->next;
 		}
@@ -284,21 +284,21 @@ inline void array_clean(m_array_t* array, free_func_t fr) { //remove all items a
 
 /**======string functions======*/
 
-#define STR_BUF 16
+#define mstr_BUF 16
 
-void str_reset(str_t* str) {
+void mstr_reset(mstr_t* str) {
 	if(str->cstr == NULL) {
-		str->cstr = (char*)_malloc(STR_BUF);
-		str->max = STR_BUF;
+		str->cstr = (char*)_malloc(mstr_BUF);
+		str->max = mstr_BUF;
 	}
 
 	str->cstr[0] = 0;
 	str->len = 0;	
 }
 
-char* str_ncpy(str_t* str, const char* src, uint32_t l) {
+char* mstr_ncpy(mstr_t* str, const char* src, uint32_t l) {
 	if(src == NULL || src[0] == 0 || l == 0) {
-		str_reset(str);
+		mstr_reset(str);
 		return str->cstr;
 	}
 
@@ -308,7 +308,7 @@ char* str_ncpy(str_t* str, const char* src, uint32_t l) {
 
 	uint32_t new_size = len;
 	if(str->max <= new_size) {
-		new_size = len + STR_BUF; /*STR BUF for buffer*/
+		new_size = len + mstr_BUF; /*STR BUF for buffer*/
 		str->cstr = (char*)_realloc(str->cstr, str->max, new_size);
 		str->max = new_size;
 	}
@@ -319,22 +319,22 @@ char* str_ncpy(str_t* str, const char* src, uint32_t l) {
 	return str->cstr;
 }
 
-char* str_cpy(str_t* str, const char* src) {
-	str_ncpy(str, src, 0x0FFFF);
+char* mstr_cpy(mstr_t* str, const char* src) {
+	mstr_ncpy(str, src, 0x0FFFF);
 	return str->cstr;
 }
 
-str_t* str_new(const char* s) {
-	str_t* ret = (str_t*)_malloc(sizeof(str_t));
+mstr_t* mstr_new(const char* s) {
+	mstr_t* ret = (mstr_t*)_malloc(sizeof(mstr_t));
 	ret->cstr = NULL;
 	ret->max = 0;
 	ret->len = 0;
-	str_cpy(ret, s);
+	mstr_cpy(ret, s);
 	return ret;
 }
 
-str_t* str_new_by_size(uint32_t sz) {
-	str_t* ret = (str_t*)_malloc(sizeof(str_t));
+mstr_t* mstr_new_by_size(uint32_t sz) {
+	mstr_t* ret = (mstr_t*)_malloc(sizeof(mstr_t));
 	ret->cstr = (char*)_malloc(sz);
 	ret->max = sz;
 	ret->cstr[0] = 0;
@@ -342,7 +342,7 @@ str_t* str_new_by_size(uint32_t sz) {
 	return ret;
 }
 
-char* str_append(str_t* str, const char* src) {
+char* mstr_append(mstr_t* str, const char* src) {
 	if(src == NULL || src[0] == 0) {
 		return str->cstr;
 	}
@@ -350,7 +350,7 @@ char* str_append(str_t* str, const char* src) {
 	uint32_t len = (uint32_t)strlen(src);
 	uint32_t new_size = str->len + len;
 	if(str->max <= new_size) {
-		new_size = str->len + len + STR_BUF; /*STR BUF for buffer*/
+		new_size = str->len + len + mstr_BUF; /*STR BUF for buffer*/
 		str->cstr = (char*)_realloc(str->cstr, str->max, new_size);
 		str->max = new_size;
 	}
@@ -361,10 +361,10 @@ char* str_append(str_t* str, const char* src) {
 	return str->cstr;
 }
 
-char* str_add(str_t* str, char c) {
+char* mstr_add(mstr_t* str, char c) {
 	uint32_t new_size = str->len + 1;
 	if(str->max <= new_size) {
-		new_size = str->len + STR_BUF; /*STR BUF for buffer*/
+		new_size = str->len + mstr_BUF; /*STR BUF for buffer*/
 		str->cstr = (char*)_realloc(str->cstr, str->max, new_size);
 		str->max = new_size;
 	}
@@ -375,15 +375,15 @@ char* str_add(str_t* str, char c) {
 	return str->cstr;
 }
 
-char* str_add_int(str_t* str, int i, int base) {
-	return str_append(str, str_from_int(i, base));
+char* mstr_add_int(mstr_t* str, int i, int base) {
+	return mstr_append(str, mstr_from_int(i, base));
 }
 
-char* str_add_float(str_t* str, float f) {
-	return str_append(str, str_from_float(f));
+char* mstr_add_float(mstr_t* str, float f) {
+	return mstr_append(str, mstr_from_float(f));
 }
 
-void str_free(str_t* str) {
+void mstr_free(mstr_t* str) {
 	if(str == NULL)
 		return;
 
@@ -393,14 +393,14 @@ void str_free(str_t* str) {
 	_free(str);
 }
 
-static char _str_result[STATIC_STR_MAX+1];
+static char _mstr_result[STATIC_mstr_MAX+1];
 
-const char* str_from_int(int value, int base) {
+const char* mstr_from_int(int value, int base) {
     // check that the base if valid
     if (base < 2 || base > 36) 
 			base = 10;
 
-    char* ptr = _str_result, *ptr1 = _str_result, tmp_char;
+    char* ptr = _mstr_result, *ptr1 = _mstr_result, tmp_char;
     int tmp_value;
 
     do {
@@ -417,19 +417,19 @@ const char* str_from_int(int value, int base) {
         *ptr--= *ptr1;
         *ptr1++ = tmp_char;
     }
-    return _str_result;
+    return _mstr_result;
 }
 
-const char* str_from_bool(bool b) {
+const char* mstr_from_bool(bool b) {
 	return b ? "true":"false";
 }
 
-const char* str_from_float(float i) {
-	snprintf(_str_result, STATIC_STR_MAX-1, "%f", i);
-	return _str_result;
+const char* mstr_from_float(float i) {
+	snprintf(_mstr_result, STATIC_mstr_MAX-1, "%f", i);
+	return _mstr_result;
 }
 
-int str_to_int(const char* str) {
+int mstr_to_int(const char* str) {
 	int i = 0;
 	if(strstr(str, "0x") != NULL ||
 			strstr(str, "0x") != NULL)
@@ -439,11 +439,11 @@ int str_to_int(const char* str) {
 	return i;
 }
 
-float str_to_float(const char* str) {
-	return atof(str);
+float mstr_to_float(const char* str) {
+	return 0.0;//atof(str);
 }
 
-void str_split(const char* str, char c, m_array_t* array) {
+void mstr_split(const char* str, char c, m_array_t* array) {
 	int i = 0;
 	char offc = str[i];
 	while(true) {
@@ -466,9 +466,9 @@ void str_split(const char* str, char c, m_array_t* array) {
 	}
 }
 
-int str_to(const char* str, char c, str_t* res, bool skipspace) {
+int mstr_to(const char* str, char c, mstr_t* res, bool skipspace) {
 	int i = 0;
-	str_reset(res);
+	mstr_reset(res);
 
 	while(true) {
 		char offc = str[i]; 
@@ -485,7 +485,7 @@ int str_to(const char* str, char c, str_t* res, bool skipspace) {
 		if(offc == c) 
 			break;
 		else
-			str_add(res, offc);
+			mstr_add(res, offc);
 		i++;
 	}
 
@@ -516,18 +516,18 @@ void utf8_reader_init(utf8_reader_t* reader, const char* s, uint32_t offset) {
 
 /**Read single word with UTF-8 encode
 */
-bool utf8_read(utf8_reader_t* reader, str_t* dst) {
+bool utf8_read(utf8_reader_t* reader, mstr_t* dst) {
 	if(reader == NULL || reader->str == NULL)
 		return false;
 	const char* src = reader->str;
-	str_reset(dst);
+	mstr_reset(dst);
 
 	uint8_t b;
 	b = src[reader->offset++];
 	if(b == 0)//end of input
 		return false; 
 
-	str_add(dst, b);
+	mstr_add(dst, b);
 	if(!isASCII(b)) { //not ASCII
 		uint8_t count = 0;
 		if((b >> 4) == 0x0E) { //3 bytes encode like UTF-8 Chinese
@@ -547,7 +547,7 @@ bool utf8_read(utf8_reader_t* reader, str_t* dst) {
 			b = src[reader->offset++];
 			if(b == 0)
 				return false; //wrong encode.
-			str_add(dst, b);
+			mstr_add(dst, b);
 			count--;
 		}
 	}
@@ -560,9 +560,9 @@ utf8_t* utf8_new(const char* s) {
 	utf8_reader_t reader;
 	utf8_reader_init(&reader, s, 0);
 	while(true) {
-		str_t* str = str_new("");
+		mstr_t* str = mstr_new("");
 		if(!utf8_read(&reader, str)) {
-			str_free(str);
+			mstr_free(str);
 			break;
 		}
 		array_add(ret, str);
@@ -573,7 +573,7 @@ utf8_t* utf8_new(const char* s) {
 void utf8_free(utf8_t* utf8) {
 	if(utf8 == NULL)
 		return;
-	array_clean(utf8, (free_func_t)str_free);
+	array_clean(utf8, (free_func_t)mstr_free);
 	_free(utf8);
 }
 
@@ -583,22 +583,22 @@ uint32_t utf8_len(utf8_t* utf8) {
 	return utf8->size;
 }
 
-str_t* utf8_at(utf8_t* utf8, uint32_t at) {
+mstr_t* utf8_at(utf8_t* utf8, uint32_t at) {
 	if(utf8 == NULL || at >= utf8_len(utf8))
 		return NULL;
-	return (str_t*)array_get(utf8, at);
+	return (mstr_t*)array_get(utf8, at);
 }
 
 void utf8_set(utf8_t* utf8, uint32_t at, const char* s) {
 	if(s == NULL || s[0]  == 0) {
-		array_del(utf8, at, (free_func_t)str_free);
+		array_del(utf8, at, (free_func_t)mstr_free);
 		return;
 	}
 
-	str_t* str = utf8_at(utf8, at);
+	mstr_t* str = utf8_at(utf8, at);
 	if(str == NULL)
 		return;
-	str_cpy(str, s);
+	mstr_cpy(str, s);
 }
 
 void utf8_append_raw(utf8_t* utf8, const char* s) {
@@ -609,7 +609,7 @@ void utf8_append_raw(utf8_t* utf8, const char* s) {
 	uint32_t len = utf8_len(u);
 	uint32_t i;
 	for(i=0; i<len; ++i) {
-		str_t* s = utf8_at(u, i);
+		mstr_t* s = utf8_at(u, i);
 		if(s == NULL)
 			break;
 		array_add(utf8, s);
@@ -621,21 +621,21 @@ void utf8_append_raw(utf8_t* utf8, const char* s) {
 void utf8_append(utf8_t* utf8, const char* s) {
 	if(utf8 == NULL || s == NULL || s[0] == 0)
 		return;
-	array_add(utf8, str_new(s));
+	array_add(utf8, mstr_new(s));
 }
 
-void utf8_to_str(utf8_t* utf8, str_t* str) {
-	str_reset(str);
+void utf8_to_str(utf8_t* utf8, mstr_t* str) {
+	mstr_reset(str);
 	if(utf8 == NULL)
 		return;
 
 	uint32_t len = utf8_len(utf8);
 	uint32_t i;
 	for(i=0; i<len; ++i) {
-		str_t* s = utf8_at(utf8, i);
+		mstr_t* s = utf8_at(utf8, i);
 		if(s == NULL)
 			break;
-		str_append(str, s->cstr);
+		mstr_append(str, s->cstr);
 	}
 }
 
@@ -763,7 +763,7 @@ void lex_reset(lex_t* lex) {
 	lex->tk_end     = 0;
 	lex->tk_last_end = 0;
 	lex->tk  = LEX_EOF;
-	str_reset(lex->tk_str);
+	mstr_reset(lex->tk_str);
 	lex_get_nextch(lex);
 	lex_get_nextch(lex);
 }
@@ -772,12 +772,12 @@ void lex_init(lex_t * lex, const char* input) {
 	lex->data = input;
 	lex->data_start = 0;
 	lex->data_end = (int)strlen(lex->data);
-	lex->tk_str = str_new("");
+	lex->tk_str = mstr_new("");
 	lex_reset(lex);
 }
 
 void lex_release(lex_t* lex) {
-	str_free(lex->tk_str);
+	mstr_free(lex->tk_str);
 	lex->tk_str = NULL;
 }
 
@@ -801,47 +801,47 @@ void lex_get_basic_token(lex_t* lex) {
 	// tokens
 	if (is_alpha(lex->curr_ch)) { //  IDs
 		while (is_alpha(lex->curr_ch) || is_numeric(lex->curr_ch)) {
-			str_add(lex->tk_str, lex->curr_ch);
+			mstr_add(lex->tk_str, lex->curr_ch);
 			lex_get_nextch(lex);
 		}
 		lex->tk = LEX_ID;
 	} else if (is_numeric(lex->curr_ch)) { // _numbers
 		bool isHex = false;
 		if (lex->curr_ch=='0') {
-			str_add(lex->tk_str, lex->curr_ch);
+			mstr_add(lex->tk_str, lex->curr_ch);
 			lex_get_nextch(lex);
 		}
 		if (lex->curr_ch=='x') {
 			isHex = true;
-			str_add(lex->tk_str, lex->curr_ch);
+			mstr_add(lex->tk_str, lex->curr_ch);
 			lex_get_nextch(lex);
 		}
 		lex->tk = LEX_INT;
 
 		while (is_numeric(lex->curr_ch) || (isHex && is_hexadecimal(lex->curr_ch))) {
-			str_add(lex->tk_str, lex->curr_ch);
+			mstr_add(lex->tk_str, lex->curr_ch);
 			lex_get_nextch(lex);
 		}
 		if (!isHex && lex->curr_ch=='.' && is_numeric(lex->next_ch)) {
 			lex->tk = LEX_FLOAT;
-			str_add(lex->tk_str, '.');
+			mstr_add(lex->tk_str, '.');
 			lex_get_nextch(lex);
 			while (is_numeric(lex->curr_ch)) {
-				str_add(lex->tk_str, lex->curr_ch);
+				mstr_add(lex->tk_str, lex->curr_ch);
 				lex_get_nextch(lex);
 			}
 		}
 		// do fancy e-style floating point
 		if (!isHex && (lex->curr_ch=='e'||lex->curr_ch=='E')) {
 			lex->tk = LEX_FLOAT;
-			str_add(lex->tk_str, lex->curr_ch);
+			mstr_add(lex->tk_str, lex->curr_ch);
 			lex_get_nextch(lex);
 			if (lex->curr_ch=='-') {
-				str_add(lex->tk_str, lex->curr_ch);
+				mstr_add(lex->tk_str, lex->curr_ch);
 				lex_get_nextch(lex);
 			}
 			while (is_numeric(lex->curr_ch)) {
-				str_add(lex->tk_str, lex->curr_ch);
+				mstr_add(lex->tk_str, lex->curr_ch);
 				lex_get_nextch(lex);
 			}
 		}
@@ -852,15 +852,15 @@ void lex_get_basic_token(lex_t* lex) {
 			if (lex->curr_ch == '\\') {
 				lex_get_nextch(lex);
 				switch (lex->curr_ch) {
-					case 'n' : str_add(lex->tk_str, '\n'); break;
-					case 'r' : str_add(lex->tk_str, '\r'); break;
-					case 't' : str_add(lex->tk_str, '\t'); break;
-					case '"' : str_add(lex->tk_str, '\"'); break;
-					case '\\' : str_add(lex->tk_str, '\\'); break;
-					default: str_add(lex->tk_str, lex->curr_ch);
+					case 'n' : mstr_add(lex->tk_str, '\n'); break;
+					case 'r' : mstr_add(lex->tk_str, '\r'); break;
+					case 't' : mstr_add(lex->tk_str, '\t'); break;
+					case '"' : mstr_add(lex->tk_str, '\"'); break;
+					case '\\' : mstr_add(lex->tk_str, '\\'); break;
+					default: mstr_add(lex->tk_str, lex->curr_ch);
 				}
 			} else {
-				str_add(lex->tk_str, lex->curr_ch);
+				mstr_add(lex->tk_str, lex->curr_ch);
 			}
 			lex_get_nextch(lex);
 		}
@@ -912,19 +912,19 @@ static void lex_js_get_js_str(lex_t* lex) {
 		if (lex->curr_ch == '\\') {
 			lex_get_nextch(lex);
 			switch (lex->curr_ch) {
-				case 'n' : str_add(lex->tk_str, '\n'); break;
-				case 'a' : str_add(lex->tk_str, '\a'); break;
-				case 'r' : str_add(lex->tk_str, '\r'); break;
-				case 't' : str_add(lex->tk_str, '\t'); break;
-				case '\'' : str_add(lex->tk_str, '\''); break;
-				case '\\' : str_add(lex->tk_str, '\\'); break;
+				case 'n' : mstr_add(lex->tk_str, '\n'); break;
+				case 'a' : mstr_add(lex->tk_str, '\a'); break;
+				case 'r' : mstr_add(lex->tk_str, '\r'); break;
+				case 't' : mstr_add(lex->tk_str, '\t'); break;
+				case '\'' : mstr_add(lex->tk_str, '\''); break;
+				case '\\' : mstr_add(lex->tk_str, '\\'); break;
 				case 'x' : { // hex digits
 										 char buf[3] = "??";
 										 lex_get_nextch(lex);
 										 buf[0] = lex->curr_ch;
 										 lex_get_nextch(lex);
 										 buf[1] = lex->curr_ch;
-										 str_add(lex->tk_str, (char)strtol(buf,0,16));
+										 mstr_add(lex->tk_str, (char)strtol(buf,0,16));
 									 } break;
 				default: if (lex->curr_ch>='0' && lex->curr_ch<='7') {
 									 // octal digits
@@ -934,12 +934,12 @@ static void lex_js_get_js_str(lex_t* lex) {
 									 buf[1] = lex->curr_ch;
 									 lex_get_nextch(lex);
 									 buf[2] = lex->curr_ch;
-									 str_add(lex->tk_str, (char)strtol(buf,0,8));
+									 mstr_add(lex->tk_str, (char)strtol(buf,0,8));
 								 } else
-									 str_add(lex->tk_str, lex->curr_ch);
+									 mstr_add(lex->tk_str, lex->curr_ch);
 			}
 		} else {
-			str_add(lex->tk_str, lex->curr_ch);
+			mstr_add(lex->tk_str, lex->curr_ch);
 		}
 		lex_get_nextch(lex);
 	}
@@ -957,7 +957,7 @@ static void lex_js_get_reserved_word(lex_t *lex) {
 
 static void lex_js_get_next_token(lex_t* lex) {
 	lex->tk = LEX_EOF;
-	str_reset(lex->tk_str);
+	mstr_reset(lex->tk_str);
 
 	lex_skip_whitespace(lex);
 	if(lex_skip_comments_line(lex, "//")) {
@@ -1019,15 +1019,15 @@ static var_t* json_parse_factor(vm_t* vm, lex_t *l) {
 		return var_new_int(vm, i);
 	}
 	else if (l->tk==LEX_FLOAT) {
-		float f = atof(l->tk_str->cstr);
+		float f = 0.0;//atof(l->tk_str->cstr);
 		lex_js_chkread(l, LEX_FLOAT);
 		return var_new_float(vm, f);
 	}
 	else if (l->tk==LEX_STR) {
-		str_t* s = str_new(l->tk_str->cstr);
+		mstr_t* s = mstr_new(l->tk_str->cstr);
 		lex_js_chkread(l, LEX_STR);
 		var_t* ret = var_new_str(vm, s->cstr);
-		str_free(s);
+		mstr_free(s);
 		return ret;
 	}
 	else if(l->tk==LEX_R_FUNCTION) {
@@ -1053,7 +1053,7 @@ static var_t* json_parse_factor(vm_t* vm, lex_t *l) {
 		lex_js_chkread(l, '{');
 		var_t* obj = var_new_obj(vm, NULL, NULL);
 		while(l->tk != '}') {
-			str_t* id = str_new(l->tk_str->cstr);
+			mstr_t* id = mstr_new(l->tk_str->cstr);
 			if(l->tk == LEX_STR)
 				lex_js_chkread(l, LEX_STR);
 			else
@@ -1062,7 +1062,7 @@ static var_t* json_parse_factor(vm_t* vm, lex_t *l) {
 			lex_js_chkread(l, ':');
 			var_t* v = json_parse_factor(vm, l);
 			var_add(obj, id->cstr, v);
-			str_free(id);
+			mstr_free(id);
 			if(l->tk != '}')
 				lex_js_chkread(l, ',');
 		}
@@ -1088,13 +1088,13 @@ var_t* json_parse(vm_t* vm, const char* str) {
 
 
 uint32_t bc_getstrindex(bytecode_t* bc, const char* str) {
-	uint32_t sz = bc->str_table.size;
+	uint32_t sz = bc->mstr_table.size;
 	uint32_t i;
 	if(str == NULL || str[0] == 0)
 		return OFF_MASK;
 
 	for(i=0; i<sz; ++i) {
-		char* s = (char*)bc->str_table.items[i];
+		char* s = (char*)bc->mstr_table.items[i];
 		if(s != NULL && strcmp(s, str) == 0)
 			return i;
 	}
@@ -1102,7 +1102,7 @@ uint32_t bc_getstrindex(bytecode_t* bc, const char* str) {
 	uint32_t len = (uint32_t)strlen(str);
 	char* p = (char*)_malloc(len + 1);
 	memcpy(p, str, len+1);
-	array_add(&bc->str_table, p);
+	array_add(&bc->mstr_table, p);
 	return sz;
 }	
 
@@ -1110,11 +1110,11 @@ void bc_init(bytecode_t* bc) {
 	bc->cindex = 0;
 	bc->code_buf = NULL;
 	bc->buf_size = 0;
-	array_init(&bc->str_table);
+	array_init(&bc->mstr_table);
 }
 
 void bc_release(bytecode_t* bc) {
-	array_clean(&bc->str_table, NULL);
+	array_clean(&bc->mstr_table, NULL);
 	if(bc->code_buf != NULL)
 		_free(bc->code_buf);
 }
@@ -1172,13 +1172,13 @@ PC bc_gen_str(bytecode_t* bc, opr_code_t instr, const char* str) {
 	if(instr == INSTR_INT) {
 		if(strstr(str, "0x") != NULL ||
 				strstr(str, "0x") != NULL)
-			i = (uint32_t)strtol(str, NULL, 16);
+			i = (uint32_t)strtoul(str, NULL, 16);
 		else
 			i = (uint32_t)strtol(str, NULL, 10);
 		s = NULL;
 	}
 	else if(instr == INSTR_FLOAT) {
-		f = atof(str);
+		f = 0.0;//atof(str);
 		s = NULL;
 	}
 	
@@ -1232,7 +1232,7 @@ PC bc_add_instr(bytecode_t* bc, PC anchor, opr_code_t op, PC target) {
 
 #ifdef MARIO_DEBUG
 
-const char* instr_str(opr_code_t ins) {
+const char* inmstr_str(opr_code_t ins) {
 	switch(ins) {
 		case  INSTR_NIL					: return "NIL";
 		case  INSTR_END					: return "END";
@@ -1322,17 +1322,17 @@ const char* instr_str(opr_code_t ins) {
 	}
 }
 
-PC bc_get_instr_str(bytecode_t* bc, PC i, str_t* ret) {
+PC bc_get_inmstr_str(bytecode_t* bc, PC i, mstr_t* ret) {
 	PC ins = bc->code_buf[i];
 	opr_code_t instr = OP(ins);
 	uint32_t offset = ins & OFF_MASK;
 
 	char s[128+1];
-	str_reset(ret);
+	mstr_reset(ret);
 
 	if(offset == OFF_MASK) {
-		snprintf(s, 128, "%08d | 0x%08X ; %s", i, ins, instr_str(instr));	
-		str_append(ret, s);
+		snprintf(s, 128, "%08d | 0x%08X ; %s", i, ins, inmstr_str(instr));	
+		mstr_append(ret, s);
 	}
 	else {
 		if(instr == INSTR_JMP || 
@@ -1340,21 +1340,21 @@ PC bc_get_instr_str(bytecode_t* bc, PC i, str_t* ret) {
 				instr == INSTR_NJMPB ||
 				instr == INSTR_JMPB ||
 				instr == INSTR_INT_S) {
-			snprintf(s, 128, "%08d | 0x%08X ; %s\t%d", i, ins, instr_str(instr), offset);	
-			str_append(ret, s);
+			snprintf(s, 128, "%08d | 0x%08X ; %s\t%d", i, ins, inmstr_str(instr), offset);	
+			mstr_append(ret, s);
 		}
 		else {
-			snprintf(s, 128, "%08d | 0x%08X ; %s\t\"", i, ins, instr_str(instr));	
-			str_append(ret, s);
-			str_append(ret, bc_getstr(bc, offset));
-			str_add(ret, '"');
+			snprintf(s, 128, "%08d | 0x%08X ; %s\t\"", i, ins, inmstr_str(instr));	
+			mstr_append(ret, s);
+			mstr_append(ret, bc_getstr(bc, offset));
+			mstr_add(ret, '"');
 		}
 	}
 	
 	if(instr == INSTR_INT) {
 		ins = bc->code_buf[i+1];
 		snprintf(s, 128, "\n%08d | 0x%08X ; %d", i+1, ins, ins);	
-		str_append(ret, s);
+		mstr_append(ret, s);
 		i++;
 	}
 	else if(instr == INSTR_FLOAT) {
@@ -1362,7 +1362,7 @@ PC bc_get_instr_str(bytecode_t* bc, PC i, str_t* ret) {
 		float f;
 		memcpy(&f, &ins, sizeof(PC));
 		snprintf(s, 128, "\n%08d | 0x%08X ; %f", i+1, ins, f);	
-		str_append(ret, s);
+		mstr_append(ret, s);
 		i++;
 	}	
 	return i;
@@ -1371,29 +1371,29 @@ PC bc_get_instr_str(bytecode_t* bc, PC i, str_t* ret) {
 void bc_dump(bytecode_t* bc) {
 	PC i;
 	char index[32];
-	PC sz = bc->str_table.size;
+	PC sz = bc->mstr_table.size;
 
-	_out_func("str_index| value\n");
+	_out_func("mstr_index| value\n");
 	_out_func("---------------------------------------\n");
 	for(i=0; i<sz; ++i) {
 		sprintf(index, "0x%06X | ", i);
 		_out_func(index);
-		_out_func((const char*)bc->str_table.items[i]);
+		_out_func((const char*)bc->mstr_table.items[i]);
 		_out_func("\n");
 	}
 	_out_func("\npc_index | opr_code   ; instruction\n");
 	_out_func("---------------------------------------\n");
 
-	str_t* s = str_new("");
+	mstr_t* s = mstr_new("");
 
 	i = 0;
 	while(i < bc->cindex) {
-		i = bc_get_instr_str(bc, i, s);
+		i = bc_get_inmstr_str(bc, i, s);
 		_out_func(s->cstr);
 		_out_func("\n");
 		i++;
 	}
-	str_free(s);
+	mstr_free(s);
 	_out_func("---------------------------------------\n");
 }
 #endif
@@ -1625,6 +1625,11 @@ inline void var_clean(var_t* var) {
 	if(var_empty(var))
 		return;
 	var->status = V_ST_FREE; //mark as freed for avoid dead loop
+
+	if(var->on_destroy != NULL) {
+		var->on_destroy(var);
+	}
+
 	/*free children*/
 	if(var->children.size > 0)
 		var_remove_all(var);	
@@ -1636,11 +1641,6 @@ inline void var_clean(var_t* var) {
 		else
 			_free(var->value);
 		var->value = NULL;
-	}
-
-	if(var->on_destroy != NULL) {
-		var->on_destroy(var);
-		var->on_destroy = NULL;
 	}
 
 	var_t* next = var->next; //backup next
@@ -2062,81 +2062,81 @@ inline func_t* var_get_func(var_t* var) {
 	return (func_t*)var->value;
 }
 
-static void get_m_str(const char* str, str_t* ret) {
-	str_reset(ret);
-	str_add(ret, '"');
+static void get_m_str(const char* str, mstr_t* ret) {
+	mstr_reset(ret);
+	mstr_add(ret, '"');
 	/*
 	while(*str != 0) {
 		switch (*str) {
-			case '\\': str_append(ret, "\\\\"); break;
-			case '\n': str_append(ret, "\\n"); break;
-			case '\r': str_append(ret, "\\r"); break;
-			case '\a': str_append(ret, "\\a"); break;
-			case '"':  str_append(ret, "\\\""); break;
-			default: str_add(ret, *str);
+			case '\\': mstr_append(ret, "\\\\"); break;
+			case '\n': mstr_append(ret, "\\n"); break;
+			case '\r': mstr_append(ret, "\\r"); break;
+			case '\a': mstr_append(ret, "\\a"); break;
+			case '"':  mstr_append(ret, "\\\""); break;
+			default: mstr_add(ret, *str);
 		}
 		str++;
 	}
 	*/
-	str_append(ret, str);
-	str_add(ret, '"');
+	mstr_append(ret, str);
+	mstr_add(ret, '"');
 }
 
-void var_to_str(var_t* var, str_t* ret) {
-	str_reset(ret);
+void var_to_str(var_t* var, mstr_t* ret) {
+	mstr_reset(ret);
 	if(var == NULL) {
-		str_cpy(ret, "undefined");
+		mstr_cpy(ret, "undefined");
 		return;
 	}
 
 	switch(var->type) {
 	case V_INT:
-		str_cpy(ret, str_from_int(var_get_int(var), 10));
+		mstr_cpy(ret, mstr_from_int(var_get_int(var), 10));
 		break;
 	case V_FLOAT:
-		str_cpy(ret, str_from_float(var_get_float(var)));
+		mstr_cpy(ret, mstr_from_float(var_get_float(var)));
 		break;
 	case V_STRING:
-		str_cpy(ret, var_get_str(var));
+		mstr_cpy(ret, var_get_str(var));
 		break;
 	case V_OBJECT:
 		var_to_json_str(var, ret, 0);
 		break;
 	case V_BOOL:
-		str_cpy(ret, var_get_int(var) == 1 ? "true":"false");
+		mstr_cpy(ret, var_get_int(var) == 1 ? "true":"false");
 		break;
 	case V_NULL:
-		str_cpy(ret, "null");
+		mstr_cpy(ret, "null");
 		break;
 	default:
-		str_cpy(ret, "undefined");
+		mstr_cpy(ret, "undefined");
 		break;
 	}
 }
 
-static void get_parsable_str(var_t* var, str_t* ret) {
-	str_reset(ret);
+static void get_parsable_str(var_t* var, mstr_t* ret) {
+	mstr_reset(ret);
 
-	str_t* s = str_new("");
+	mstr_t* s = mstr_new("");
 	var_to_str(var, s);
 	if(var->type == V_STRING)
 		get_m_str(s->cstr, ret);
 	else
-		str_cpy(ret, s->cstr);
+		mstr_cpy(ret, s->cstr);
 
-	str_free(s);
+	mstr_free(s);
 }
 
-static void append_json_spaces(str_t* ret, int level) {
+static void append_json_spaces(mstr_t* ret, int level) {
 	int spaces;
 	for (spaces = 0; spaces<=level; ++spaces) {
-        str_add(ret, ' '); str_add(ret, ' ');
+        mstr_add(ret, ' '); mstr_add(ret, ' ');
 	}
 }
 
 static bool _done_arr_inited = false;
-void var_to_json_str(var_t* var, str_t* ret, int level) {
-	str_reset(ret);
+void var_to_json_str(var_t* var, mstr_t* ret, int level) {
+	mstr_reset(ret);
 
 	uint32_t i;
 
@@ -2153,7 +2153,7 @@ void var_to_json_str(var_t* var, str_t* ret, int level) {
 		uint32_t sz = done.size;
 		for(i=0; i<sz; ++i) {
 			if(done.items[i] == var) { //already done before.
-				str_cpy(ret, "{}");
+				mstr_cpy(ret, "{}");
 				if(level == 0)
 					array_remove_all(&done);
 				return;
@@ -2163,7 +2163,7 @@ void var_to_json_str(var_t* var, str_t* ret, int level) {
 	}
 
 	if (var->is_array) {
-		str_add(ret, '[');
+		mstr_add(ret, '[');
 		uint32_t len = var_array_size(var);
 		if (len>100) len=100; // we don't want to get stuck here!
 
@@ -2171,18 +2171,18 @@ void var_to_json_str(var_t* var, str_t* ret, int level) {
 		for (i=0;i<len;i++) {
 			node_t* n = var_array_get(var, i);
 
-			str_t* s = str_new("");
+			mstr_t* s = mstr_new("");
 			var_to_json_str(n->var, s, level);
-			str_append(ret, s->cstr);
-			str_free(s);
+			mstr_append(ret, s->cstr);
+			mstr_free(s);
 
 			if (i<len-1) 
-				str_append(ret, ", ");
+				mstr_append(ret, ", ");
 		}
-		str_add(ret, ']');
+		mstr_add(ret, ']');
 	}
 	else if (var->is_func) {
-		str_append(ret, "function (");
+		mstr_append(ret, "function (");
 		// get list of parameters
 		int sz = 0;
 		if(var->value != NULL) {
@@ -2190,23 +2190,23 @@ void var_to_json_str(var_t* var, str_t* ret, int level) {
 			sz = func->args.size;
 			int i=0;
 			for(i=0; i<sz; ++i) {
-				str_append(ret, (const char*)func->args.items[i]);
+				mstr_append(ret, (const char*)func->args.items[i]);
 				if ((i+1) < sz) {
-					str_append(ret, ", ");
+					mstr_append(ret, ", ");
 				}
 			}
 		}
 		// add function body
-		str_append(ret, ") {}");
+		mstr_append(ret, ") {}");
 		//return;
 	}
 	else if (var->type == V_OBJECT) {
 		// children - handle with bracketed list
 		int sz = (int)var->children.size;
 		if(sz > 0)
-			str_append(ret, "{\n");
+			mstr_append(ret, "{\n");
 		else
-			str_append(ret, "{");
+			mstr_append(ret, "{");
 
 		int i;
 		bool had = false;
@@ -2215,32 +2215,32 @@ void var_to_json_str(var_t* var, str_t* ret, int level) {
 			if(strcmp(n->name, "prototype") == 0)
 				continue;
 			if(had)
-				str_append(ret, ",\n");
+				mstr_append(ret, ",\n");
 			had = true;
 			append_json_spaces(ret, level);
-			str_add(ret, '"');
-			str_append(ret, n->name);
-			str_add(ret, '"');
-			str_append(ret, ": ");
+			mstr_add(ret, '"');
+			mstr_append(ret, n->name);
+			mstr_add(ret, '"');
+			mstr_append(ret, ": ");
 
-			str_t* s = str_new("");
+			mstr_t* s = mstr_new("");
 			var_to_json_str(n->var, s, level+1);
-			str_append(ret, s->cstr);
-			str_free(s);
+			mstr_append(ret, s->cstr);
+			mstr_free(s);
 		}
 		if(sz > 0) {
-			str_add(ret, '\n');
+			mstr_add(ret, '\n');
 		}
 	
 		append_json_spaces(ret, level - 1);	
-		str_add(ret, '}');
+		mstr_add(ret, '}');
 	} 
 	else {
 		// no children or a function... just write value directly
-		str_t* s = str_new("");
+		mstr_t* s = mstr_new("");
 		get_parsable_str(var, s);
-		str_append(ret, s->cstr);
-		str_free(s);
+		mstr_append(ret, s->cstr);
+		mstr_free(s);
 	}
 
 	if(level == 0) {
@@ -3017,11 +3017,11 @@ static inline void math_op(vm_t* vm, opr_code_t op, var_t* v1, var_t* v2) {
 
 	//do string + 
 	if(op == INSTR_PLUS || op == INSTR_PLUSEQ) {
-		str_t* s = str_new((const char*)v1->value);
-		str_t* json = str_new("");
+		mstr_t* s = mstr_new((const char*)v1->value);
+		mstr_t* json = mstr_new("");
 		var_to_str(v2, json);
-		str_append(s, json->cstr);
-		str_free(json);
+		mstr_append(s, json->cstr);
+		mstr_free(json);
 
 		var_t* v;
 		if(op == INSTR_PLUSEQ) {
@@ -3035,7 +3035,7 @@ static inline void math_op(vm_t* vm, opr_code_t op, var_t* v1, var_t* v2) {
 		else {
 			v = var_new_str(vm, s->cstr);
 		}
-		str_free(s);
+		mstr_free(s);
 		vm_push(vm, v);
 	}
 }
@@ -3262,28 +3262,28 @@ var_t* new_obj(vm_t* vm, const char* name, int arg_num) {
 	return obj;
 }
 
-static int parse_func_name(const char* full, str_t* name) {
+static int parse_func_name(const char* full, mstr_t* name) {
 	const char* pos = strchr(full, '$');
 	int args_num = 0;
 	if(pos != NULL) {
 		args_num = atoi(pos+1);
 		if(name != NULL)
-			str_ncpy(name, full, (uint32_t)(pos-full));	
+			mstr_ncpy(name, full, (uint32_t)(pos-full));	
 	}
 	else {
 		if(name != NULL)
-			str_cpy(name, full);
+			mstr_cpy(name, full);
 	}
 	return args_num;
 }
 
 /** create object and try constructor */
 static bool do_new(vm_t* vm, const char* full) {
-	str_t* name = str_new("");
+	mstr_t* name = mstr_new("");
 	int arg_num = parse_func_name(full, name);
 
 	var_t* obj = new_obj(vm, name->cstr, arg_num);
-	str_free(name);
+	mstr_free(name);
 
 	if(obj == NULL)
 		return false;
@@ -3356,12 +3356,12 @@ static bool interrupt_raw(vm_t* vm, var_t* obj, const char* func_name, var_t* fu
 		is->handle_func = NULL;
 
 	if(func_name != NULL && func_name[0] != 0) 
-		is->handle_func_name = str_new(func_name);
+		is->handle_func_name = mstr_new(func_name);
 	else
 		is->handle_func_name = NULL;
 
 	if(msg != NULL)
-		is->msg = str_new(msg);
+		is->msg = mstr_new(msg);
 	else
 		is->msg = NULL;
 
@@ -3428,7 +3428,7 @@ void try_interrupter(vm_t* vm) {
 			var_add(args, "", var_new_str(vm, ""));
 		else
 			var_add(args, "", var_new_str(vm, sig->msg->cstr));
-		str_free(sig->msg);
+		mstr_free(sig->msg);
 	}
 
 	vm_push(vm, args);
@@ -3453,7 +3453,7 @@ void try_interrupter(vm_t* vm) {
 	//var_unref(sig->obj);
 	var_unref(func);
 	if(sig->handle_func_name != NULL)
-		str_free(sig->handle_func_name);
+		mstr_free(sig->handle_func_name);
 	_free(sig);
 	vm->isignal_num--;
 	vm->interrupted = false;
@@ -3502,23 +3502,23 @@ static void do_include(vm_t* vm, const char* jsname) {
 	//check if included or not.
 	int i;
 	for(i=0; i<vm->included.size; i++) {
-		str_t* jsn = (str_t*)array_get(&vm->included, i);
+		mstr_t* jsn = (mstr_t*)array_get(&vm->included, i);
 		if(strcmp(jsn->cstr, jsname) == 0)
 			return;
 	}
 
-	str_t* js = _load_m_func(vm, jsname);
+	mstr_t* js = _load_m_func(vm, jsname);
 	if(js == NULL) {
 		mario_debug("[debug] Error: include file '");
 		mario_debug(jsname);
 		mario_debug("' not found!\n");
 		return;
 	}
-	array_add(&vm->included, str_new(jsname));
+	array_add(&vm->included, mstr_new(jsname));
 
 	PC pc = vm->pc;
 	vm_load_run(vm, js->cstr);
-	str_free(js);
+	mstr_free(js);
 	vm->pc = pc;
 }
 
@@ -4036,7 +4036,7 @@ bool vm_run(vm_t* vm) {
 				var_t* obj = NULL;
 				bool unrefObj = false;
 				const char* s = bc_getstr(&vm->bc, offset);
-				str_t* name = str_new("");
+				mstr_t* name = mstr_new("");
 				int arg_num = parse_func_name(s, name);
 				var_t* sc_var = vm_get_scope_var(vm);
 				
@@ -4080,7 +4080,7 @@ bool vm_run(vm_t* vm) {
 					mario_debug(s);
 					mario_debug("'!\n");
 				}
-				str_free(name);
+				mstr_free(name);
 
 				if(unrefObj && obj != NULL)
 					var_unref(obj);
@@ -4325,7 +4325,7 @@ void vm_close(vm_t* vm) {
 	vm->scopes = NULL;
 	array_clean(&vm->init_natives, NULL);
 
-	array_clean(&vm->included, (free_func_t)str_free);	
+	array_clean(&vm->included, (free_func_t)mstr_free);	
 
 	var_unref(vm->root);
 	bc_release(&vm->bc);
@@ -4368,8 +4368,8 @@ node_t* vm_reg_native(vm_t* vm, var_t* cls, const char* decl, native_func_t nati
 		cls_var = var_get_prototype(cls);
 	}
 
-	str_t* name = str_new("");
-	str_t* arg = str_new("");
+	mstr_t* name = mstr_new("");
+	mstr_t* arg = mstr_new("");
 
 	func_t* func = func_new();
 	func->native = native;
@@ -4379,7 +4379,7 @@ node_t* vm_reg_native(vm_t* vm, var_t* cls, const char* decl, native_func_t nati
 	//read name
 	while(*off != '(') { 
 		if(*off != ' ') //skip spaces
-			str_add(name, *off);
+			mstr_add(name, *off);
 		off++; 
 	}
 	off++; 
@@ -4388,18 +4388,18 @@ node_t* vm_reg_native(vm_t* vm, var_t* cls, const char* decl, native_func_t nati
 		if(*off == ',' || *off == ')') {
 			if(arg->len > 0)
 				array_add_buf(&func->args, arg->cstr, arg->len+1);
-			str_reset(arg);
+			mstr_reset(arg);
 		}
 		else if(*off != ' ') //skip spaces
-			str_add(arg, *off);
+			mstr_add(arg, *off);
 
 		off++; 
 	} 
-	str_free(arg);
+	mstr_free(arg);
 
 	var_t* var = var_new_func(vm, func);
 	node_t* node = var_add(cls_var, name->cstr, var);
-	str_free(name);
+	mstr_free(name);
 
 	return node;
 }
@@ -4504,8 +4504,8 @@ static var_t* native_debug(vm_t* vm, var_t* env, void* data) {
 	(void)vm; (void)data;
 
 	var_t* args = get_func_args(env); 
-	str_t* ret = str_new("");
-	str_t* str = str_new("");
+	mstr_t* ret = mstr_new("");
+	mstr_t* str = mstr_new("");
 	uint32_t sz = var_array_size(args);
 	uint32_t i;
 	for(i=0; i<sz; ++i) {
@@ -4513,14 +4513,14 @@ static var_t* native_debug(vm_t* vm, var_t* env, void* data) {
 		if(n != NULL) {
 			var_to_str(n->var, str);
 			if(i > 0)
-				str_add(ret, ' ');
-			str_append(ret, str->cstr);
+				mstr_add(ret, ' ');
+			mstr_append(ret, str->cstr);
 		}
 	}
-	str_free(str);
-	str_add(ret, '\n');
+	mstr_free(str);
+	mstr_add(ret, '\n');
 	_out_func(ret->cstr);
-	str_free(ret);
+	mstr_free(ret);
 	return NULL;
 }
 
