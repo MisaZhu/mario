@@ -27,7 +27,7 @@ void lex_get_reserved(lex_t* lex) {
 
 void lex_get_next_token(lex_t* lex) {
 	lex->tk = LEX_EOF;
-	str_reset(lex->tk_str);
+	mstr_reset(lex->tk_str);
 
 	lex_skip_space(lex); //skip the space like ' ','\t','\r'. but keep '\n' for end of sentence.
 	//skip comments.
@@ -61,12 +61,12 @@ bool lex_chkread(lex_t* lex, uint32_t expected_tk) {
 }
 
 /*function */
-void gen_func_name(const char* name, int arg_num, str_t* full) {
-	str_reset(full);
-	str_cpy(full, name);
+void gen_func_name(const char* name, int arg_num, mstr_t* full) {
+	mstr_reset(full);
+	mstr_cpy(full, name);
 	if(arg_num > 0) {
-		str_append(full, "$");
-		str_append(full, str_from_int(arg_num, 10));
+		mstr_append(full, "$");
+		mstr_append(full, mstr_from_int(arg_num, 10));
 	}
 }
 
@@ -96,10 +96,10 @@ int call_func(lex_t* l, bytecode_t* bc) {
 
 void factor_func(lex_t* l, bytecode_t* bc, const char* name) {
 	int arg_num = call_func(l, bc);
-	str_t* fname = str_new("");
+	mstr_t* fname = mstr_new("");
 	gen_func_name(name, arg_num, fname);
 	bc_gen_str(bc, INSTR_CALL, fname->cstr);	
-	str_free(fname);
+	mstr_free(fname);
 }
 
 bool factor(lex_t* l, bytecode_t* bc) {
@@ -121,11 +121,11 @@ bool factor(lex_t* l, bytecode_t* bc) {
 		if(!lex_chkread(l, LEX_STR)) return false;
 	}
 	else if(l->tk==LEX_ID) {
-		str_t* name = str_new(l->tk_str->cstr);
+		mstr_t* name = mstr_new(l->tk_str->cstr);
 		if(!lex_chkread(l, LEX_ID)) return false;
 
 		bc_gen_str(bc, INSTR_LOAD, name->cstr);
-		str_free(name);
+		mstr_free(name);
 	}
 
 	return true;
@@ -179,7 +179,7 @@ bool statement(lex_t* l, bytecode_t* bc) {
 	}
 
 	//read line num
-	int32_t ln = str_to_int(l->tk_str->cstr);
+	int32_t ln = mstr_to_int(l->tk_str->cstr);
 	if(!lex_chkread(l, LEX_INT)) return false;
 	add_line(&_lines, ln, bc->cindex);
 
@@ -192,7 +192,7 @@ bool statement(lex_t* l, bytecode_t* bc) {
 		pop = false;
 		if(!lex_chkread(l, LEX_R_GOTO)) return false;
 		if(l->tk != LEX_INT) return false;
-		int32_t ln_to = str_to_int(l->tk_str->cstr);
+		int32_t ln_to = mstr_to_int(l->tk_str->cstr);
 		if(!lex_chkread(l, LEX_INT)) return false;
 		//keep the goto instruction to _gotos array, 
 		//coz we have to calculate the jmp/jmpb offset after finished the compiling. 

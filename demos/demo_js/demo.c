@@ -35,11 +35,11 @@ var_t* native_print(vm_t* vm, var_t* env, void* data) {
 	(void)vm; (void)data;
 
 	var_t* v = var_find_var(env, "s");
-	str_t* s = str_new("");
+	mstr_t* s = mstr_new("");
 	var_to_str(v, s);
-	str_add(s, '\n');
+	mstr_add(s, '\n');
 	_out_func(s->cstr);
-	str_free(s);
+	mstr_free(s);
 	return NULL;
 }
 
