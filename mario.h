@@ -10,29 +10,21 @@
 extern "C" {
 #endif
 
+/**====== platform porting functions.======*/
+extern void* (*_malloc)(uint32_t size);
+extern void  (*_free)(void* p);
+extern void  (*_out_func)(const char*);
+
 /**====== memory functions.======*/
+extern void* _realloc(void* p, uint32_t old_size, uint32_t new_size);
 
-#ifndef MARIO_DEBUG
-	#define _malloc malloc
-	#define _free free
-#else
-	extern void* _raw_malloc(uint32_t size, const char* file, uint32_t line);
-	#define _malloc(size) _raw_malloc((size), __FILE__, __LINE__)
-	extern void _free(void *p);
-#endif
-
-extern void mario_mem_init(void);
-extern void mario_mem_close(void);
-extern void* _raw_realloc(void* p, uint32_t old_size, uint32_t new_size, const char* file, uint32_t line);
-#define _realloc(p, old_size, new_size) _raw_realloc(p, old_size, new_size, __FILE__, __LINE__)
-
-#define STATIC_mstr_MAX 32
-
-typedef void (*free_func_t)(void* p);
-extern void (*_out_func)(const char*);
+/**====== debug functions.======*/
+extern bool _m_debug;
 void mario_debug(const char* s);
 
 /**====== array functions. ======*/
+#define STATIC_mstr_MAX 32
+typedef void (*free_func_t)(void* p);
 
 typedef struct st_array {
 	void** items;
@@ -316,7 +308,6 @@ PC bc_reserve(bytecode_t* bc);
 
 #define bc_getstr(bc, i) (((i)>=(bc)->mstr_table.size) ? "" : (const char*)(bc)->mstr_table.items[(i)])
 
-void bc_dump(bytecode_t* bc);
 void bc_init(bytecode_t* bc);
 void bc_release(bytecode_t* bc);
 
@@ -324,7 +315,6 @@ void bc_release(bytecode_t* bc);
 /**====== mario_vm ======*/
 
 extern const char* _mario_lang;
-bool compile(bytecode_t *bc, const char* input);
 
 //script var
 #define V_UNDEF  0
@@ -469,7 +459,6 @@ node_t* node_new(vm_t* vm, const char* name, var_t* var);
 void node_free(void* p);
 var_t* node_replace(node_t* node, var_t* v);
 
-void var_dump(var_t* var);
 void var_remove_all(var_t* var);
 node_t* var_add(var_t* var, const char* name, var_t* add);
 node_t* var_add_head(var_t* var, const char* name, var_t* add);
@@ -536,7 +525,6 @@ vm_t* vm_from(vm_t* vm);
 bool vm_load(vm_t* vm, const char* s);
 bool vm_load_run(vm_t* vm, const char* s);
 bool vm_load_run_native(vm_t* vm, const char* s);
-void vm_dump(vm_t* vm);
 bool vm_run(vm_t* vm);
 void vm_close(vm_t* vm);
 

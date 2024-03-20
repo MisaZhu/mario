@@ -10,142 +10,14 @@
 extern "C" {
 #endif
 
-/**======debug functions======*/
-static inline void default_out(const char* s) {
-	printf("%s", s);
-}
+/**======platform porting functions======*/
+void* (*_malloc)(uint32_t size) = NULL;
+void  (*_free)(void* p) = NULL;
+void  (*_out_func)(const char*) = NULL;
 
-void (*_out_func)(const char*) = default_out;
+/**======memory functions======*/
 
-inline void mario_debug(const char* s) {
-#ifdef MARIO_DEBUG
-	_out_func(s);
-#endif
-}
-
-#ifdef MARIO_DEBUG
-typedef struct mem_block {
-	void* p;
-	uint32_t size;
-	const char* file;
-	uint32_t line;
-	struct mem_block *prev;
-	struct mem_block *next;
-} mem_block_t;
-
-static mem_block_t* _mem_head = NULL;
-
-#ifdef MARIO_THREAD
-static pthread_mutex_t _mem_lock;
-static inline void mem_lock_init() {
-	pthread_mutex_init(&_mem_lock, NULL);
-}
-static inline void mem_lock_destroy() {
-	pthread_mutex_destroy(&_mem_lock);
-}
-static inline void mem_lock() {
-	pthread_mutex_lock(&_mem_lock);
-}
-static inline void mem_unlock() {
-	pthread_mutex_unlock(&_mem_lock);
-}
-
-#else
-static inline void mem_lock_destroy() { }
-static inline void mem_lock_init() { }
-static inline void mem_lock() { }
-static inline void mem_unlock() { }
-#endif
-
-inline void* _raw_malloc(uint32_t size, const char* file, uint32_t line) {
-	if(size == 0)
-		return NULL;
-
-	mem_lock();
-	mem_block_t* block = (mem_block_t*)malloc(sizeof(mem_block_t));
-	block->p = malloc(size);
-	block->size = size;
-	block->file = file;
-	block->line = line;
-	block->prev = NULL;
-
-	if(_mem_head != NULL)
-		_mem_head->prev = block;
-	block->next = _mem_head;
-	_mem_head = block;
-	mem_unlock();
-	return block->p;
-}
-
-inline void _free(void* p) {
-	mem_lock();
-	mem_block_t* block = _mem_head;	
-	while(block != NULL) {
-		if(block->p == p) // found.
-			break;
-		block = block->next;
-	}
-
-	if(block == NULL) {
-		mem_unlock();
-		return;
-	}
-	
-	if(block->next != NULL)
-		block->next->prev = block->prev;
-	if(block->prev != NULL)
-		block->prev->next = block->next;
-	
-	if(block == _mem_head)
-		_mem_head = block->next;
-
-	free(block->p);
-	free(block);
-	mem_unlock();
-}
-
-void mario_mem_init() { 
-	_mem_head = NULL;	
-	mem_lock_init();
-}
-
-void mario_mem_close() { 
-	mem_lock();
-	mem_block_t* block = _mem_head;	
-	if(block != NULL) { // mem clean
-		mario_debug("[debug]memory is leaking!!!\n");
-		while(block != NULL) {
-			mario_debug(" ");
-			mario_debug(block->file);
-			mario_debug(", ");
-			mario_debug(mstr_from_int(block->line, 10));
-			mario_debug(", size=");
-			mario_debug(mstr_from_int(block->size, 10));
-			mario_debug("\n");
-			block = block->next;
-		}
-	}
-	else {
-		mario_debug("[debug] memory is clean.\n");
-	}
-	mem_unlock();
-	mem_lock_destroy();
-}
-
-void *_raw_realloc(void* p, uint32_t old_size, uint32_t new_size, const char* file, uint32_t line) {
-	void *np = _raw_malloc(new_size, file, line);
-	if(p != NULL && old_size > 0) {
-		memcpy(np, p, old_size);
-		_free(p);
-	}
-	return np;
-}
-#else
-
-void mario_mem_init() { }
-void mario_mem_close() { }
-
-void *_raw_realloc(void* p, uint32_t old_size, uint32_t new_size, const char* file, uint32_t line) {
+void *_realloc(void* p, uint32_t old_size, uint32_t new_size) {
 	void *np = _malloc(new_size);
 	if(p != NULL && old_size > 0) {
 		memcpy(np, p, old_size);
@@ -153,7 +25,19 @@ void *_raw_realloc(void* p, uint32_t old_size, uint32_t new_size, const char* fi
 	}
 	return np;
 }
-#endif
+
+/**======debug functions======*/
+bool _m_debug = false;
+
+static inline void dout(const char* s) {
+	if(_out_func != NULL)
+		_out_func(s);
+}
+
+inline void mario_debug(const char* s) {
+	if(_m_debug)
+		dout(s);
+}
 
 /**======array functions======*/
 
@@ -1230,174 +1114,6 @@ PC bc_add_instr(bytecode_t* bc, PC anchor, opr_code_t op, PC target) {
 	return bc->cindex;
 } 
 
-#ifdef MARIO_DEBUG
-
-const char* inmstr_str(opr_code_t ins) {
-	switch(ins) {
-		case  INSTR_NIL					: return "NIL";
-		case  INSTR_END					: return "END";
-		case  INSTR_OBJ					: return "OBJ";
-		case  INSTR_OBJ_END			: return "OBJE";
-		case  INSTR_MEMBER			: return "MEMBER";
-		case  INSTR_MEMBERN			: return "MEMBERN";
-		case  INSTR_POP					: return "POP";
-		case  INSTR_VAR					: return "VAR";
-		case  INSTR_LET					: return "LET";
-		case  INSTR_CONST				: return "CONST";
-		case  INSTR_INT					: return "INT";
-		case  INSTR_INT_S				: return "INTS";
-		case  INSTR_FLOAT				: return "FLOAT";
-		case  INSTR_STR					: return "STR";
-		case  INSTR_ARRAY_AT		: return "ARRAT";
-		case  INSTR_ARRAY				: return "ARR";
-		case  INSTR_ARRAY_END		: return "ARRE";
-		case  INSTR_LOAD				: return "LOAD";
-		case  INSTR_LOADO				: return "LOADO";
-		case  INSTR_STORE				: return "STORE";
-		case  INSTR_JMP					: return "JMP";
-		case  INSTR_NJMP				: return "NJMP";
-		case  INSTR_JMPB				: return "JMPB";
-		case  INSTR_NJMPB				: return "NJMPB";
-		case  INSTR_FUNC				: return "FUNC";
-		case  INSTR_FUNC_STC		: return "FUNC_STC";
-		case  INSTR_FUNC_GET		: return "FUNCGET";
-		case  INSTR_FUNC_SET		: return "FUNCSET";
-		case  INSTR_CLASS				: return "CLASS";
-		case  INSTR_CLASS_END		: return "CLASSE";
-		case  INSTR_EXTENDS			: return "EXTENDS";
-		case  INSTR_CALL				: return "CALL";
-		case  INSTR_CALLO				: return "CALLO";
-		case  INSTR_NOT					: return "NOT";
-		case  INSTR_MULTI				: return "MULTI";
-		case  INSTR_DIV					: return "DIV";
-		case  INSTR_MOD					: return "MOD";
-		case  INSTR_PLUS				: return "PLUS";
-		case  INSTR_MINUS				: return "MINUS";
-		case  INSTR_NEG					: return "NEG";
-		case  INSTR_PPLUS				: return "PPLUS";
-		case  INSTR_MMINUS			: return "MMINUS";
-		case  INSTR_PPLUS_PRE		: return "PPLUSP";
-		case  INSTR_MMINUS_PRE	: return "MMINUSP";
-		case  INSTR_LSHIFT			: return "LSHIFT";
-		case  INSTR_RSHIFT			: return "RSHIFT";
-		case  INSTR_URSHIFT			: return "URSHIFT";
-		case  INSTR_EQ					: return "EQ";
-		case  INSTR_NEQ					: return "NEQ";
-		case  INSTR_LEQ					: return "LEQ";
-		case  INSTR_GEQ					: return "GEQ";
-		case  INSTR_GRT					: return "GRT";
-		case  INSTR_LES					: return "LES";
-		case  INSTR_PLUSEQ			: return "PLUSEQ";
-		case  INSTR_MINUSEQ			: return "MINUSEQ";
-		case  INSTR_MULTIEQ			: return "MULTIEQ";
-		case  INSTR_DIVEQ				: return "DIVEQ";
-		case  INSTR_MODEQ				: return "MODEQ";
-		case  INSTR_AAND				: return "AAND";
-		case  INSTR_OOR					: return "OOR";
-		case  INSTR_OR					: return "OR";
-		case  INSTR_XOR					: return "XOR";
-		case  INSTR_AND					: return "AND";
-		case  INSTR_ASIGN				: return "ASIGN";
-		case  INSTR_BREAK				: return "BREAK";
-		case  INSTR_CONTINUE		: return "CONTINUE";
-		case  INSTR_RETURN			: return "RETURN";
-		case  INSTR_RETURNV			: return "RETURNV";
-		case  INSTR_TRUE				: return "TRUE";
-		case  INSTR_FALSE				: return "FALSE";
-		case  INSTR_NULL				: return "NULL";
-		case  INSTR_UNDEF				: return "UNDEF";
-		case  INSTR_NEW					: return "NEW";
-		case  INSTR_GET					: return "GET";
-		case  INSTR_BLOCK				: return "BLOCK";
-		case  INSTR_BLOCK_END		: return "BLOCKE";
-		case  INSTR_LOOP				: return "LOOP";
-		case  INSTR_LOOP_END		: return "LOOPE";
-		case  INSTR_TRY					: return "TRY";
-		case  INSTR_TRY_END			: return "TRYE";
-		case  INSTR_THROW				: return "THROW";
-		case  INSTR_CATCH				: return "CATCH";
-		case  INSTR_INSTOF			: return "INSTOF";
-		case  INSTR_INCLUDE			: return "INCLUDE";
-		default									: return "";
-	}
-}
-
-PC bc_get_inmstr_str(bytecode_t* bc, PC i, mstr_t* ret) {
-	PC ins = bc->code_buf[i];
-	opr_code_t instr = OP(ins);
-	uint32_t offset = ins & OFF_MASK;
-
-	char s[128+1];
-	mstr_reset(ret);
-
-	if(offset == OFF_MASK) {
-		snprintf(s, 128, "%08d | 0x%08X ; %s", i, ins, inmstr_str(instr));	
-		mstr_append(ret, s);
-	}
-	else {
-		if(instr == INSTR_JMP || 
-				instr == INSTR_NJMP || 
-				instr == INSTR_NJMPB ||
-				instr == INSTR_JMPB ||
-				instr == INSTR_INT_S) {
-			snprintf(s, 128, "%08d | 0x%08X ; %s\t%d", i, ins, inmstr_str(instr), offset);	
-			mstr_append(ret, s);
-		}
-		else {
-			snprintf(s, 128, "%08d | 0x%08X ; %s\t\"", i, ins, inmstr_str(instr));	
-			mstr_append(ret, s);
-			mstr_append(ret, bc_getstr(bc, offset));
-			mstr_add(ret, '"');
-		}
-	}
-	
-	if(instr == INSTR_INT) {
-		ins = bc->code_buf[i+1];
-		snprintf(s, 128, "\n%08d | 0x%08X ; %d", i+1, ins, ins);	
-		mstr_append(ret, s);
-		i++;
-	}
-	else if(instr == INSTR_FLOAT) {
-		ins = bc->code_buf[i+1];
-		float f;
-		memcpy(&f, &ins, sizeof(PC));
-		snprintf(s, 128, "\n%08d | 0x%08X ; %f", i+1, ins, f);	
-		mstr_append(ret, s);
-		i++;
-	}	
-	return i;
-}
-
-void bc_dump(bytecode_t* bc) {
-	PC i;
-	char index[32];
-	PC sz = bc->mstr_table.size;
-
-	_out_func("mstr_index| value\n");
-	_out_func("---------------------------------------\n");
-	for(i=0; i<sz; ++i) {
-		sprintf(index, "0x%06X | ", i);
-		_out_func(index);
-		_out_func((const char*)bc->mstr_table.items[i]);
-		_out_func("\n");
-	}
-	_out_func("\npc_index | opr_code   ; instruction\n");
-	_out_func("---------------------------------------\n");
-
-	mstr_t* s = mstr_new("");
-
-	i = 0;
-	while(i < bc->cindex) {
-		i = bc_get_inmstr_str(bc, i, s);
-		_out_func(s->cstr);
-		_out_func("\n");
-		i++;
-	}
-	mstr_free(s);
-	_out_func("---------------------------------------\n");
-}
-#endif
-
 /**======var functions======*/
 load_m_func_t _load_m_func = NULL;
 
@@ -1680,6 +1396,9 @@ static inline void add_to_gc(var_t* var) {
 }
 
 static inline var_t* get_from_free(vm_t* vm) {
+	if(vm->is_doing_gc)
+		return NULL;
+
 	var_t* var = vm->free_vars;
 	if(var != NULL) {
 		vm->free_vars = var->next;
@@ -3304,9 +3023,7 @@ var_t* call_m_func(vm_t* vm, var_t* obj, var_t* func, var_t* args) {
 	}
 
 	while(vm->is_doing_gc);
-	vm->is_doing_gc = true;
 	func_call(vm, obj, func, arg_num);
-	vm->is_doing_gc = false;
 	return vm_pop2(vm);
 }
 
@@ -4247,7 +3964,6 @@ bool vm_run(vm_t* vm) {
 				break;
 			}
 		}
-		//gc(vm, false);
 	}
 	while(vm->pc < code_size && !vm->terminated);
 	return false;
@@ -4290,12 +4006,6 @@ typedef struct st_native_init {
 	void (*func)(void*);
 	void *data;
 } native_init_t;
-
-void vm_dump(vm_t* vm) {
-#ifdef MARIO_DEBUG
-	bc_dump(&vm->bc);
-#endif
-}
 
 void vm_close(vm_t* vm) {
 	vm->terminated = true;
@@ -4519,7 +4229,7 @@ static var_t* native_debug(vm_t* vm, var_t* env, void* data) {
 	}
 	mstr_free(str);
 	mstr_add(ret, '\n');
-	_out_func(ret->cstr);
+	dout(ret->cstr);
 	mstr_free(ret);
 	return NULL;
 }
