@@ -43,41 +43,35 @@ var_t* native_print(vm_t* vm, var_t* env, void* data) {
 	return NULL;
 }
 
+static void out(const char* str) {
+    write(1, str, strlen(str));
+}
+
+bool compile(bytecode_t *bc, const char* input);
+
 int main(int argc, char** argv) {
-	bool verify = false;
 	const char* fname = "";
 
-	if(argc < 2) {
+	_free = free;
+	_malloc = malloc;
+	_out_func = out;
+
+	if(argc < 1) {
 		mario_debug("Usage: demo [source_file]!\n");
 		return 1;
 	}
 
-	if(strcmp(argv[1], "-v") == 0) {
-		if(argc != 3)
-			return 1;
-		verify = true;
-		fname = argv[2];
-	}
-	else {
-		fname = argv[1];
-	}
-
-	mario_mem_init();
-	
+	fname = argv[1];
 	vm_t* vm = vm_new(compile);
 	vm_init(vm, NULL, NULL);
 	vm_reg_static(vm, NULL, "print(s)", native_print, NULL);
 
 	if(fname[0] != 0) {
 		if(load_script(vm, fname)) {
-			if(verify)
-				vm_dump(vm);
-			else
-				vm_run(vm);
+			vm_run(vm);
 		}
 	}
 
 	vm_close(vm);
-	mario_mem_close();
 	return 0;
 }
