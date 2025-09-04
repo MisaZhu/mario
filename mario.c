@@ -2387,9 +2387,10 @@ inline node_t* vm_load_node(vm_t* vm, const char* name, bool create) {
 	if(n != NULL && n->var != NULL && n->var->status != V_ST_FREE)
 		return n;
 
-	mario_debug("[debug] Warning: '%s' undefined!\n", name);	
-	if(!create)
+	if(!create) {
+		mario_error("Error: '%s' undefined!\n", name);	
 		return NULL;
+	}
 
 	if(var == NULL)
 		return NULL;
