@@ -205,7 +205,7 @@ typedef struct st_bytecode {
 #define INSTR_ARRAY        0x00C // ARRAY         : array start
 #define INSTR_ARRAY_END    0x00D // ARRAY_END     : array end
 #define INSTR_INT_S        0x00E // SHORT_INT int : push short int
-#define INSTR_LET          0x00F // LET x         : declare let x
+#define INSTR_SAFE_VAR     0x00F // SAFE_VAR x    : declare safe_var x
 
 #define INSTR_FUNC         0x010 // FUNC x        : function definetion x
 #define INSTR_FUNC_GET     0x011 // GET FUNC x    : class get function definetion x

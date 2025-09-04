@@ -3646,7 +3646,7 @@ bool vm_run(vm_t* vm) {
 				}
 				break;
 			}
-			case INSTR_LET:
+			case INSTR_SAFE_VAR:
 			case INSTR_CONST: 
 			{
 				const char* s = bc_getstr(&vm->bc, offset);
@@ -4224,8 +4224,6 @@ static var_t* native_debug(vm_t* vm, var_t* env, void* data) {
 		node_t* n = var_array_get(args, i);
 		if(n != NULL) {
 			var_to_str(n->var, str);
-			if(i > 0)
-				mstr_add(ret, ' ');
 			mstr_append(ret, str->cstr);
 		}
 	}
