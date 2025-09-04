@@ -58,29 +58,54 @@ static void out(const char* str) {
     write(1, str, strlen(str));
 }
 
+bool _dump = false;
+static int doargs(int argc, char* argv[]) {
+	int c = 0;
+	while (c != -1) {
+		c = getopt (argc, argv, "d");
+		if(c == -1)
+			break;
+
+		switch (c) {
+		case 'd':
+			_dump = true;
+			break;
+		case '?':
+			return -1;
+		default:
+			c = -1;
+			break;
+		}
+	}
+	return optind;
+}
+
 bool compile(bytecode_t *bc, const char* input);
 void bc_dump_out(bytecode_t* bc);
 
 int main(int argc, char** argv) {
 	const char* fname = "";
 
+	_m_debug = true;
 	_free = free;
 	_malloc = malloc;
 	_out_func = out;
 
-	if(argc < 1) {
+	int argind = doargs(argc, argv);
+	if(argind >= argc) {
 		mario_debug("Usage: demo [source_file]!\n");
 		return 1;
 	}
 
-	fname = argv[1];
+	fname = argv[argind];
 	vm_t* vm = vm_new(compile);
 	vm_init(vm, NULL, NULL);
 	vm_reg_static(vm, NULL, "print()", native_print, NULL);
 
 	if(fname[0] != 0) {
 		if(load_script(vm, fname)) {
-			bc_dump_out(&vm->bc);
+			if(_dump)
+				bc_dump_out(&vm->bc);
 			vm_run(vm);
 		}
 	}
