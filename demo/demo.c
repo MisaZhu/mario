@@ -59,6 +59,7 @@ static void out(const char* str) {
 }
 
 bool compile(bytecode_t *bc, const char* input);
+void bc_dump_out(bytecode_t* bc);
 
 int main(int argc, char** argv) {
 	const char* fname = "";
@@ -79,6 +80,7 @@ int main(int argc, char** argv) {
 
 	if(fname[0] != 0) {
 		if(load_script(vm, fname)) {
+			bc_dump_out(&vm->bc);
 			vm_run(vm);
 		}
 	}
