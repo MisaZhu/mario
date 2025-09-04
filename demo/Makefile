@@ -8,7 +8,7 @@ AR := $(CROSS_COMPILE)ar
 LD := $(CROSS_COMPILE)gcc
 
 MARIO_VM = ..
-mario_OBJS= $(MARIO_VM)/mario.o
+mario_OBJS= $(MARIO_VM)/mario.o $(MARIO_VM)/mbc/mbc.o
 
 lang_OBJS = compiler.o
 
