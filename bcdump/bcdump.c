@@ -138,34 +138,35 @@ static PC bc_get_inmstr_str(bytecode_t* bc, PC i, mstr_t* ret) {
 	return i;
 }
 
-void bc_dump_out(bytecode_t* bc) {
-    if(_out_func == NULL)
-        return;
+mstr_t* bc_dump(bytecode_t* bc) {
+	mstr_t* ret = mstr_new("");
+    if(ret == NULL)
+        return NULL;
 
 	PC i;
 	char index[32];
 	PC sz = bc->mstr_table.size;
 
-	_out_func("mstr_index| value\n");
-	_out_func("---------------------------------------\n");
+	mstr_append(ret, "mstr_index| value\n");
+	mstr_append(ret, "---------------------------------------\n");
 	for(i=0; i<sz; ++i) {
 		sprintf(index, "0x%06X | ", i);
-		_out_func(index);
-		_out_func((const char*)bc->mstr_table.items[i]);
-		_out_func("\n");
+		mstr_append(ret, index);
+		mstr_append(ret, (const char*)bc->mstr_table.items[i]);
+		mstr_append(ret, "\n");
 	}
-	_out_func("\npc_index | opr_code   ; instruction\n");
-	_out_func("---------------------------------------\n");
+	mstr_append(ret, "\npc_index | opr_code   ; instruction\n");
+	mstr_append(ret, "---------------------------------------\n");
 
 	mstr_t* s = mstr_new("");
-
 	i = 0;
 	while(i < bc->cindex) {
 		i = bc_get_inmstr_str(bc, i, s);
-		_out_func(s->cstr);
-		_out_func("\n");
+		mstr_append(ret, s->cstr);
+		mstr_append(ret, "\n");
 		i++;
 	}
 	mstr_free(s);
-	_out_func("---------------------------------------\n");
+	mstr_append(ret, "---------------------------------------\n");
+	return ret;
 }

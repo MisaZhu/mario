@@ -1,4 +1,5 @@
 #include "mario.h"
+#include "bcdump/bcdump.h"
 
 #include <unistd.h>
 #include <sys/stat.h>
@@ -11,25 +12,24 @@
 #define ERR_MAX 1023
 char _err_info[ERR_MAX+1];
 
-bool load_script(vm_t* vm, const char* fname) {
+char* load_script(const char* fname) {
 	int fd = open(fname, O_RDONLY);
 	if(fd < 0) {
 		snprintf(_err_info, ERR_MAX, "Can not open file '%s'\n", fname);
 		mario_debug(_err_info);
-		return false;
+		return NULL;
 	}
 
 	struct stat st;
 	fstat(fd, &st);
 
 	char* s = (char*)_malloc(st.st_size+1);
-	read(fd, s, st.st_size);
+	if(s != NULL) {
+		read(fd, s, st.st_size);
+		s[st.st_size] = 0;
+	}
 	close(fd);
-	s[st.st_size] = 0;
-
-	bool ret = vm_load(vm, s);
-	_free(s);
-	return ret;
+	return s;
 }
 
 static var_t* native_print(vm_t* vm, var_t* env, void* data) {
@@ -81,7 +81,6 @@ static int doargs(int argc, char* argv[]) {
 }
 
 bool compile(bytecode_t *bc, const char* input);
-void bc_dump_out(bytecode_t* bc);
 
 int main(int argc, char** argv) {
 	const char* fname = "";
@@ -103,14 +102,25 @@ int main(int argc, char** argv) {
 	vm_init(vm, NULL, NULL);
 	vm_reg_static(vm, NULL, "print()", native_print, NULL);
 
-	if(fname[0] != 0) {
-		if(load_script(vm, fname)) {
-			if(_dump)
-				bc_dump_out(&vm->bc);
-			vm_run(vm);
-		}
+	char* s = load_script(fname);
+	if(s == NULL) {
+		mario_debug("Load script failed!\n");
+		return 1;
 	}
 
+	bool res = vm_load(vm, s);
+	_free(s);
+
+	if(res) {
+		if(_dump) {
+			mstr_t* dump = bc_dump(&vm->bc);
+			if(dump != NULL) {
+				_out_func(dump->cstr);
+				mstr_free(dump);
+			}
+		}
+		vm_run(vm);
+	}
 	vm_close(vm);
 	return 0;
 }
