@@ -1,0 +1,8 @@
+{
+    "files.associations": {
+        "dlfcn.h": "c",
+        "dirent.h": "c",
+        "unistd.h": "c",
+        "stdlib.h": "c"
+    }
+}

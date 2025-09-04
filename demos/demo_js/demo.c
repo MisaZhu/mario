@@ -5,6 +5,7 @@
 #include <fcntl.h>
 #include <dlfcn.h>
 #include <dirent.h>
+#include <stdlib.h>
 #include <stdio.h>
 
 #define ERR_MAX 1023

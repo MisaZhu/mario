@@ -14,7 +14,7 @@ lang_OBJS = compiler.o
 
 OBJS = demo.o $(mario_OBJS) $(lang_OBJS)
 
-CFLAGS =  -g -I$(MARIO_VM) -Wall -fPIC -DMARIO_CACHE -DMARIO_DEBUG
+CFLAGS =  -g -I$(MARIO_VM) -Wall -fPIC -DMARIO_CACHE -DMARIO_DEBUG -Wno-incompatible-function-pointer-types
 #CFLAGS =  -g -I$(MARIO_VM) -Wall -fPIC -DMARIO_DEBUG -DMARIO_CACHE -DMARIO_THREAD
 #LDFLAGS =  -lm -ldl -lpthread
 
