@@ -62,13 +62,16 @@ bool _dump = false;
 static int doargs(int argc, char* argv[]) {
 	int c = 0;
 	while (c != -1) {
-		c = getopt (argc, argv, "d");
+		c = getopt (argc, argv, "ad");
 		if(c == -1)
 			break;
 
 		switch (c) {
-		case 'd':
+		case 'a':
 			_dump = true;
+			break;
+		case 'd':
+			_m_debug = true;
 			break;
 		case '?':
 			return -1;
@@ -85,7 +88,6 @@ bool compile(bytecode_t *bc, const char* input);
 int main(int argc, char** argv) {
 	const char* fname = "";
 
-	_m_debug = true;
 	_dump = false;
 	_free = free;
 	_malloc = malloc;
@@ -119,7 +121,8 @@ int main(int argc, char** argv) {
 				mstr_free(dump);
 			}
 		}
-		vm_run(vm);
+		else
+			vm_run(vm);
 	}
 	vm_close(vm);
 	return 0;
