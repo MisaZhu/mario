@@ -37,7 +37,7 @@ static inline void dout(const char* s) {
 }
 
 #define BUF_SIZE 256
-void mario_debug(const char *format, ...) {
+inline void mario_debug(const char *format, ...) {
 	if(!_m_debug)
 		return;
 
@@ -2369,14 +2369,9 @@ static inline var_t* vm_this_in_scopes(vm_t* vm) {
 inline node_t* vm_load_node(vm_t* vm, const char* name, bool create) {
 	var_t* var = vm_get_scope_var(vm);
 
-	node_t* n;
-	if(var != NULL) {
+	node_t* n = NULL;
+	if(var != NULL)
 		n = find_member(var, name);
-	}
-	else {
-		n = vm_find_in_scopes(vm, name);
-	}
-
 	if(n == NULL)
 		n =  vm_find_in_scopes(vm, name);	
 
