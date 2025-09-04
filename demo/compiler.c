@@ -234,7 +234,7 @@ void mario_debug_pos(lex_t* l, int pos) {
 	int col;
 
 	lex_get_pos(l, &line, &col, pos);
-	mario_debug("(line: %d, col: %d)\n",  mstr_from_int(line, 10), mstr_from_int(col, 10));
+	mario_debug("(line: %d, col: %d)\n",  line, col);
 }
 
 bool lex_chkread(lex_t* lex, uint32_t expected_tk);
@@ -770,8 +770,8 @@ bool base(lex_t* l, bytecode_t* bc) {
 }
 
 static bool is_stmt_end(int tk) {
-	return (tk == ';' || tk == '\n' || tk == 0);
-	//return (tk == ';');
+	//return (tk == ';' || tk == '\n' || tk == 0);
+	return (tk == ';');
 }
 
 bool stmt_var(lex_t* l, bytecode_t* bc) {
