@@ -229,66 +229,6 @@ void lex_get_next_token(lex_t* lex) {
 	lex_token_end(lex);
 }
 
-#ifdef MARIO_DEBUG
-
-const char* lex_get_token_str(int token) {
-	if (token>32 && token<128) {
-		static char buf[4] = "' '";
-		buf[1] = (char)token;
-		return buf;
-	}
-	switch (token) {
-		case LEX_EOF            : return "EOF";
-		case LEX_ID             : return "ID";
-		case LEX_INT            : return "INT";
-		case LEX_FLOAT          : return "FLOAT";
-		case LEX_STR            : return "STRING";
-		case LEX_EQUAL          : return "==";
-		case LEX_TYPEEQUAL      : return "===";
-		case LEX_NEQUAL         : return "!=";
-		case LEX_NTYPEEQUAL     : return "!==";
-		case LEX_LEQUAL         : return "<=";
-		case LEX_LSHIFT         : return "<<";
-		case LEX_LSHIFTEQUAL    : return "<<=";
-		case LEX_GEQUAL         : return ">=";
-		case LEX_RSHIFT         : return ">>";
-		case LEX_RSHIFTUNSIGNED : return ">>";
-		case LEX_RSHIFTEQUAL    : return ">>=";
-		case LEX_PLUSEQUAL      : return "+=";
-		case LEX_MINUSEQUAL     : return "-=";
-		case LEX_MULTIEQUAL     : return "*=";
-		case LEX_DIVEQUAL 	    : return "/=";
-		case LEX_MODEQUAL   	  : return "%=";
-		case LEX_PLUSPLUS       : return "++";
-		case LEX_MINUSMINUS     : return "--";
-		case LEX_ANDEQUAL       : return "&=";
-		case LEX_ANDAND         : return "&&";
-		case LEX_OREQUAL        : return "|=";
-		case LEX_OROR           : return "||";
-		case LEX_XOREQUAL       : return "^=";
-															// reserved words
-		case LEX_R_IF           : return "if";
-		case LEX_R_ELSE         : return "else";
-		case LEX_R_DO           : return "do";
-		case LEX_R_WHILE        : return "while";
-		case LEX_R_FOR          : return "for";
-		case LEX_R_BREAK        : return "break";
-		case LEX_R_CONTINUE     : return "continue";
-		case LEX_R_STATIC       : return "static";
-		case LEX_R_FUNCTION     : return "function";
-		case LEX_R_RETURN       : return "return";
-		case LEX_R_CONST        : return "CONST";
-		case LEX_R_SAFE_VAR          : return "var";
-		case LEX_R_TRUE         : return "true";
-		case LEX_R_FALSE        : return "false";
-		case LEX_R_NULL         : return "null";
-		case LEX_R_UNDEFINED    : return "undefined";
-	}
-	return "?[UNKNOW]";
-}
-
-#endif
-
 void mario_debug_pos(lex_t* l, int pos) {
 	int line = 1;
 	int col;
@@ -308,9 +248,6 @@ bool lex_skip_empty(lex_t* l) {
 
 bool lex_chkread(lex_t* lex, uint32_t expected_tk) { //check read with empty line.
 	if (lex->tk != expected_tk) {
-#ifdef MARIO_DEBUG
-		mario_debug("Got %s expected %s", lex_get_token_str(lex->tk), lex_get_token_str(expected_tk));
-#endif
 		mario_debug_pos(lex, -1);
 		return false;
 	}

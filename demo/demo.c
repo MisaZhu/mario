@@ -87,6 +87,7 @@ int main(int argc, char** argv) {
 	const char* fname = "";
 
 	_m_debug = true;
+	_dump = false;
 	_free = free;
 	_malloc = malloc;
 	_out_func = out;
