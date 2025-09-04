@@ -29,18 +29,27 @@ void *_realloc(void* p, uint32_t old_size, uint32_t new_size) {
 }
 
 /**======debug functions======*/
-bool _m_debug = false;
-
 static inline void dout(const char* s) {
 	if(_out_func != NULL)
 		_out_func(s);
 }
 
-#define BUF_SIZE 256
+#define BUF_SIZE 512
+
+bool _m_debug = false;
 inline void mario_debug(const char *format, ...) {
 	if(!_m_debug)
 		return;
 
+	char buf[BUF_SIZE+1] = {0};
+	va_list ap;
+	va_start(ap, format);
+	vsnprintf(buf, BUF_SIZE, format, ap);
+	va_end(ap);
+	dout(buf);
+}
+
+inline void mario_error(const char *format, ...) {
 	char buf[BUF_SIZE+1] = {0};
 	va_list ap;
 	va_start(ap, format);
@@ -927,7 +936,7 @@ static var_t* json_parse_factor(vm_t* vm, lex_t *l) {
 	else if(l->tk==LEX_R_FUNCTION) {
 		lex_js_chkread(l, LEX_R_FUNCTION);
 		//TODO
-		mario_debug("[debug] Error: Can not parse json function item!\n");
+		mario_error("Error: Can not parse json function item!\n");
 		return var_new(vm);
 	}
 	else if (l->tk=='[') {
@@ -2378,7 +2387,7 @@ inline node_t* vm_load_node(vm_t* vm, const char* name, bool create) {
 	if(n != NULL && n->var != NULL && n->var->status != V_ST_FREE)
 		return n;
 
-	//mario_debug("Warning: '%s' undefined!\n");	
+	mario_debug("[debug] Warning: '%s' undefined!\n", name);	
 	if(!create)
 		return NULL;
 
@@ -2971,7 +2980,7 @@ var_t* new_obj(vm_t* vm, const char* name, int arg_num) {
 	node_t* n = vm_load_node(vm, name, false); //load class;
 
 	if(n == NULL || n->var->type != V_OBJECT) {
-		mario_debug("[debug] Error: There is no class: '%s'!\n", name);
+		mario_error("Error: There is no class: '%s'!\n", name);
 		return NULL;
 	}
 
@@ -3240,7 +3249,7 @@ static void do_include(vm_t* vm, const char* jsname) {
 
 	mstr_t* js = _load_m_func(vm, jsname);
 	if(js == NULL) {
-		mario_debug("[debug] Error: include file '%s' not found!\n", jsname);
+		mario_error("Error: include file '%s' not found!\n", jsname);
 		return;
 	}
 	array_add(&vm->included, mstr_new(jsname));
@@ -3369,7 +3378,7 @@ bool vm_run(vm_t* vm) {
 				while(true) {
 					scope_t* sc = vm_get_scope(vm);
 					if(sc == NULL) {
-						mario_debug("[debug] Error: 'break' not in any loop!\n");
+						mario_error("Error: 'break' not in any loop!\n");
 						vm_terminate(vm);
 						break;
 					}
@@ -3386,7 +3395,7 @@ bool vm_run(vm_t* vm) {
 				while(true) {
 					scope_t* sc = vm_get_scope(vm);
 					if(sc == NULL) {
-						mario_debug("[debug] Error: 'continue' not in any loop!\n");
+						mario_error("Error: 'continue' not in any loop!\n");
 						vm_terminate(vm);
 						break;
 					}
@@ -3653,7 +3662,7 @@ bool vm_run(vm_t* vm) {
 				var_t* v = vm_get_scope_var(vm);
 				node_t *node = var_find(v, s);
 				if(node != NULL) { //find just in current scope
-					mario_debug("[debug] Error: let '%s' has already existed!\n", s);
+					mario_error("Error: let '%s' has already existed!\n", s);
 					vm_terminate(vm);
 				}
 				else {
@@ -3716,7 +3725,7 @@ bool vm_run(vm_t* vm) {
 				if(modi) 
 					node_replace(n, v);
 				else {
-					mario_debug("[debug] Can not change a const variable: '%s'!\n", n->name);
+					mario_error("Error: Can not change a const variable: '%s'!\n", n->name);
 				}
 
 				if((ins & INSTR_OPT_CACHE) == 0) {
@@ -3797,7 +3806,7 @@ bool vm_run(vm_t* vm) {
 						arg_num--;
 					}
 					vm_push(vm, var_new(vm));
-					mario_debug("[debug] Error: can not find function '%s'!\n", name->cstr);
+					mario_error("Error: can not find function '%s'!\n", name->cstr);
 				}
 				mstr_free(name);
 
@@ -3944,7 +3953,7 @@ bool vm_run(vm_t* vm) {
 				while(true) {
 					scope_t* sc = vm_get_scope(vm);
 					if(sc == NULL) {
-						mario_debug("[debug] Error: 'throw' not in any try...catch!\n");
+						mario_error("Error: 'throw' not in any try...catch!\n");
 						vm_terminate(vm);
 						break;
 					}

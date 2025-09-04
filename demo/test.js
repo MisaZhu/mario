@@ -10,9 +10,8 @@ while(true) {
 }
 
 for(i=0;i<10;i++) {
-	debug("for loop: " + i);
+	print("for loop: " + i);
 }
-
 
 //Object.
 var a = {
@@ -24,14 +23,14 @@ var a = {
 
 a.name = "xx";
 a.age = 24;
-debug(a);
+print(a);
 
 arr = [1];
 arr[10] = "hhh";
 arr[11] = {
   foobar: 10
 };
-debug(arr);
+print(arr);
 
 //var and let
 cc1 = "cc1";
@@ -39,20 +38,20 @@ cc2 = "cc2";
 {
 	let cc1 = 1;
 	var cc2 = 2;
-	debug(cc1);
-	debug(cc2);
+	print(cc1);
+	print(cc2);
 }
-debug(cc1);
-debug(cc2);
+print(cc1);
+print(cc2);
 
 //callback
 function f(callback, s) {
 	callback(s);
 }
 
-f(function(x) { debug(x); }, "callback test");
+f(function(x) { print(x); }, "callback test");
 
 const x = "aaa";
 x = "bbb";
-debug(x);
+print(x);
 
