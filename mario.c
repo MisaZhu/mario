@@ -1623,12 +1623,12 @@ static inline void gc(vm_t* vm, bool force) {
 		return;
 	mario_debug("[debug] do gc ......\n");
 	vm->is_doing_gc = true;
-	mario_debug("[debug] marking ......\n");
+	mario_debug("marking ......\n");
 	gc_vars(vm);
-	mario_debug("[debug] freeing ......");
+	mario_debug("freeing ......");
 	gc_free_vars(vm, force ? 0:vm->gc_free_buffer_size);
 	vm->is_doing_gc = false;
-	mario_debug("[debug] gc done.\n");
+	mario_debug(" gc done.\n");
 }
 
 static const char* get_typeof(var_t* var) {
@@ -2382,11 +2382,8 @@ inline node_t* vm_load_node(vm_t* vm, const char* name, bool create) {
 
 	if(n != NULL && n->var != NULL && n->var->status != V_ST_FREE)
 		return n;
-	/*
-	mario_debug("Warning: '");	
-	mario_debug(name);
-	mario_debug("' undefined!\n");	
-	*/
+
+	//mario_debug("Warning: '%s' undefined!\n");	
 	if(!create)
 		return NULL;
 
@@ -2953,9 +2950,7 @@ void do_get(vm_t* vm, var_t* v, const char* name) {
 			n = var_add(v, name, NULL);
 		}
 		else {
-			mario_debug("[debug] Can not get member '");
-			mario_debug(name);
-			mario_debug("'!\n");
+			mario_debug("[debug] Can not get member '%s'!\n", name);
 			n = node_new(vm, name, NULL);
 			vm_push(vm, var_new(vm));
 			return;
@@ -2968,9 +2963,7 @@ void do_get(vm_t* vm, var_t* v, const char* name) {
 static void do_extends(vm_t* vm, var_t* cls_var, const char* super_name) {
 	node_t* n = vm_find_in_scopes(vm, super_name);
 	if(n == NULL) {
-		mario_debug("[debug] Super Class '");
-		mario_debug(super_name);
-		mario_debug("' not found!\n");
+		mario_debug("[debug] Super Class '%s' not found!\n", super_name);
 		return;
 	}
 
@@ -2983,9 +2976,7 @@ var_t* new_obj(vm_t* vm, const char* name, int arg_num) {
 	node_t* n = vm_load_node(vm, name, false); //load class;
 
 	if(n == NULL || n->var->type != V_OBJECT) {
-		mario_debug("[debug] Error: There is no class: '");
-		mario_debug(name);
-		mario_debug("'!\n");
+		mario_debug("[debug] Error: There is no class: '%s'!\n", name);
 		return NULL;
 	}
 
@@ -3060,9 +3051,7 @@ var_t* call_m_func_by_name(vm_t* vm, var_t* obj, const char* func_name, var_t* a
 		obj = vm->root;
 	node_t* func = find_member(obj, func_name);
 	if(func == NULL || func->var->is_func == 0) {
-		mario_debug("[debug] Interrupt function '");
-		mario_debug(func_name);
-		mario_debug("' not defined!\n");
+		mario_debug("[debug] Interrupt function '%s' not defined!\n", func_name);
 		return NULL;
 	}
 	return call_m_func(vm, obj, func->var, args);
@@ -3256,9 +3245,7 @@ static void do_include(vm_t* vm, const char* jsname) {
 
 	mstr_t* js = _load_m_func(vm, jsname);
 	if(js == NULL) {
-		mario_debug("[debug] Error: include file '");
-		mario_debug(jsname);
-		mario_debug("' not found!\n");
+		mario_debug("[debug] Error: include file '%s' not found!\n", jsname);
 		return;
 	}
 	array_add(&vm->included, mstr_new(jsname));
@@ -3330,9 +3317,7 @@ bool vm_run(vm_t* vm) {
 						n = vm_load_node(vm, s, true); //load variable, warning if not exist.
 						vm_push_node(vm, n);
 						if(n->var->type != V_OBJECT) {
-							mario_debug("[debug] Warning: object or class '");
-							mario_debug(s);
-							mario_debug("' undefined, object created.\n");
+							mario_debug("[debug] Warning: object or class '%s' undefined, object created.\n", s);
 						}
 					}
 				}
@@ -3656,9 +3641,7 @@ bool vm_run(vm_t* vm) {
 				const char* s = bc_getstr(&vm->bc, offset);
 				node_t *node = vm_find(vm, s);
 				if(node != NULL) { //find just in current scope
-					mario_debug("[debug] Warning: '");
-					mario_debug(s);
-					mario_debug("' has already existed!\n");
+					mario_debug("[debug] Warning: '%s' has already existed!\n", s);
 				}
 				else {
 					var_t* v = vm_get_scope_var(vm);
@@ -3675,9 +3658,7 @@ bool vm_run(vm_t* vm) {
 				var_t* v = vm_get_scope_var(vm);
 				node_t *node = var_find(v, s);
 				if(node != NULL) { //find just in current scope
-					mario_debug("[debug] Error: let '");
-					mario_debug(s);
-					mario_debug("' has already existed!\n");
+					mario_debug("[debug] Error: let '%s' has already existed!\n", s);
 					vm_terminate(vm);
 				}
 				else {
@@ -3740,9 +3721,7 @@ bool vm_run(vm_t* vm) {
 				if(modi) 
 					node_replace(n, v);
 				else {
-					mario_debug("[debug] Can not change a const variable: '");
-					mario_debug(n->name);
-					mario_debug("'!\n");
+					mario_debug("[debug] Can not change a const variable: '%s'!\n", n->name);
 				}
 
 				if((ins & INSTR_OPT_CACHE) == 0) {
@@ -3823,9 +3802,7 @@ bool vm_run(vm_t* vm) {
 						arg_num--;
 					}
 					vm_push(vm, var_new(vm));
-					mario_debug("[debug] Error: can not find function '");
-					mario_debug(s);
-					mario_debug("'!\n");
+					mario_debug("[debug] Error: can not find function '%s'!\n", name->cstr);
 				}
 				mstr_free(name);
 
