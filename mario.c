@@ -1,6 +1,7 @@
 #include "mario.h"
 #include <stdlib.h>
 #include <stdio.h>
+#include <stdarg.h>
 
 #ifdef MRCIO_THREAD
 #include <pthread.h>
@@ -14,6 +15,7 @@ extern "C" {
 void* (*_malloc)(uint32_t size) = NULL;
 void  (*_free)(void* p) = NULL;
 void  (*_out_func)(const char*) = NULL;
+void  free_none(void* p) { }
 
 /**======memory functions======*/
 
@@ -34,9 +36,17 @@ static inline void dout(const char* s) {
 		_out_func(s);
 }
 
-inline void mario_debug(const char* s) {
-	if(_m_debug)
-		dout(s);
+#define BUF_SIZE 256
+void mario_debug(const char *format, ...) {
+	if(!_m_debug)
+		return;
+
+	char buf[BUF_SIZE+1] = {0};
+	va_list ap;
+	va_start(ap, format);
+	vsnprintf(buf, BUF_SIZE, format, ap);
+	va_end(ap);
+	dout(buf);
 }
 
 /**======array functions======*/
@@ -1458,6 +1468,7 @@ static inline void gc_mark_cache(vm_t* vm, bool mark) {
 static inline void gc_mark_stack(vm_t* vm, bool mark) {
 	int i = vm->stack_top-1;
 	while(i>=0) {
+		mario_debug("mark stack\n");
 		void *p = vm->stack[i];
 		i--;
 		if(p == NULL)
@@ -1474,7 +1485,9 @@ static inline void gc_mark_stack(vm_t* vm, bool mark) {
 				v = node->var;
 		}
 
+		mario_debug("mark stack go %d\n", mark);
 		gc_mark(v, mark);
+		mario_debug("mark stack go end\n");
 	}
 }
 
@@ -1545,26 +1558,38 @@ inline void var_unref(var_t* var) {
 }
 
 static inline void gc_vars(vm_t* vm) {
+	mario_debug("gc marking root\n");
 	gc_mark(vm->root, true); //mark all rooted vars
+	mario_debug("gc marking stack\n");
 	gc_mark_stack(vm, true); //mark all stacked vars
+	mario_debug("gc marking interrupt\n");
 	gc_mark_isignal(vm, true); //mark all interrupt signal vars
+	mario_debug("gc marking cache\n");
 	gc_mark_cache(vm, true); //mark all cached vars
 
+	mario_debug("free all marked var\n");
 	var_t* v = vm->gc_vars;
 	//first step: free unmarked vars
 	while(v != NULL) {
 		var_t* next = v->next;
 		if(v->status == V_ST_GC && v->gc_marked == false) {
+			if(v == vm->gc_vars)
+				vm->gc_vars = next;
 			var_free(v);
 		}
 		v = next;
 	}
 
+	mario_debug("gc unmarking root\n");
 	gc_mark(vm->root, false); //unmark all rooted vars
+	mario_debug("gc unmarking stack\n");
 	gc_mark_stack(vm, false); //unmark all stacked vars
+	mario_debug("gc unmarking interrupt\n");
 	gc_mark_isignal(vm, false); //unmark all interrupt signal vars
+	mario_debug("gc unmarking cache\n");
 	gc_mark_cache(vm, false); //unmark all cached vars
 
+	mario_debug("gc recycle free vars\n");
 	//second step: move freed var to free_var_list for reusing.
 	v = vm->gc_vars;
 	while(v != NULL) {
@@ -1575,6 +1600,7 @@ static inline void gc_vars(vm_t* vm) {
 		}
 		v = next;
 	}
+	mario_debug("gc_var done\n");
 }
 
 static inline void gc_free_vars(vm_t* vm, uint32_t buffer_size) {
@@ -1595,12 +1621,14 @@ static inline void gc(vm_t* vm, bool force) {
 		return;
 	if(!force && vm->gc_vars_num < vm->gc_buffer_size)
 		return;
-	mario_debug("[debug] do gc ......");
+	mario_debug("[debug] do gc ......\n");
 	vm->is_doing_gc = true;
+	mario_debug("[debug] marking ......\n");
 	gc_vars(vm);
+	mario_debug("[debug] freeing ......");
 	gc_free_vars(vm, force ? 0:vm->gc_free_buffer_size);
 	vm->is_doing_gc = false;
-	mario_debug(" gc done.\n");
+	mario_debug("[debug] gc done.\n");
 }
 
 static const char* get_typeof(var_t* var) {
@@ -3028,6 +3056,8 @@ var_t* call_m_func(vm_t* vm, var_t* obj, var_t* func, var_t* args) {
 }
 
 var_t* call_m_func_by_name(vm_t* vm, var_t* obj, const char* func_name, var_t* args) {
+	if(obj == NULL)
+		obj = vm->root;
 	node_t* func = find_member(obj, func_name);
 	if(func == NULL || func->var->is_func == 0) {
 		mario_debug("[debug] Interrupt function '");

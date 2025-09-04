@@ -20,7 +20,7 @@ extern void* _realloc(void* p, uint32_t old_size, uint32_t new_size);
 
 /**====== debug functions.======*/
 extern bool _m_debug;
-void mario_debug(const char* s);
+void mario_debug(const char *format, ...);
 
 /**====== array functions. ======*/
 #define STATIC_mstr_MAX 32
@@ -361,6 +361,7 @@ typedef struct st_var {
 } var_t;
 
 typedef var_t* (*native_func_t)(struct st_vm *, var_t*, void*);
+void free_none(void* p);
 
 typedef struct st_func {
 	native_func_t native;
