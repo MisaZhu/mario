@@ -62,7 +62,7 @@ bool _dump = false;
 static int doargs(int argc, char* argv[]) {
 	int c = 0;
 	while (c != -1) {
-		c = getopt (argc, argv, "ad");
+		c = getopt (argc, argv, "ad?");
 		if(c == -1)
 			break;
 
@@ -94,8 +94,8 @@ int main(int argc, char** argv) {
 	_out_func = out;
 
 	int argind = doargs(argc, argv);
-	if(argind >= argc) {
-		mario_debug("Usage: demo [source_file]!\n");
+	if(argind < 0 || argind >= argc) {
+		mario_error("Usage: demo (-d/-a) [source_file]!\n");
 		return 1;
 	}
 
@@ -106,7 +106,7 @@ int main(int argc, char** argv) {
 
 	char* s = load_script(fname);
 	if(s == NULL) {
-		mario_debug("Load script failed!\n");
+		mario_error("Load script failed!\n");
 		return 1;
 	}
 
