@@ -3203,7 +3203,7 @@ bool interrupt_by_name(vm_t* vm, var_t* obj, const char* func_name, const char* 
 /*****************/
 
 var_t* vm_new_class(vm_t* vm, const char* cls) {
-	node_t* n = vm_load_node(vm, name, create);
+	node_t* n = vm_load_node(vm, cls, true);
 	if(n == NULL)
 		return NULL;
 	var_t* cls_var = n->var;
