@@ -2004,19 +2004,6 @@ void var_to_json_str(var_t* var, mstr_t* ret, int level) {
 	}
 }
 
-static inline var_t* vm_load_var(vm_t* vm, const char* name, bool create) {
-	node_t* n = vm_load_node(vm, name, create);
-	if(n != NULL)
-		return n->var;
-	return NULL;
-}
-
-static inline void vm_load_basic_classes(vm_t* vm) {
-	vm->var_String = vm_load_var(vm, "String", false);
-	vm->var_Array = vm_load_var(vm, "Array", false);
-	vm->var_Number = vm_load_var(vm, "Number", false);
-}
-
 /** var cache for const value --------------*/
 
 #ifdef MARIO_CACHE
@@ -3216,7 +3203,10 @@ bool interrupt_by_name(vm_t* vm, var_t* obj, const char* func_name, const char* 
 /*****************/
 
 var_t* vm_new_class(vm_t* vm, const char* cls) {
-	var_t* cls_var = vm_load_var(vm, cls, true);
+	node_t* n = vm_load_node(vm, name, create);
+	if(n == NULL)
+		return NULL;
+	var_t* cls_var = n->var;
 	cls_var->type = V_OBJECT;
 	if(var_get_prototype(cls_var) == NULL)
 		var_set_prototype(cls_var, var_new_obj(vm, NULL, NULL));
@@ -4318,8 +4308,6 @@ void vm_init(vm_t* vm,
 		native_init_t* it = (native_init_t*)array_get(&vm->init_natives, i);
 		it->func(it->data);
 	}
-
-	vm_load_basic_classes(vm);
 }
 
 #ifdef __cplusplus
