@@ -294,7 +294,9 @@ typedef struct st_bytecode {
 
 #define INSTR_INCLUDE      0x0C0 // include
 
-#define INSTR_END          0x0FF //END : end of code.
+#define INSTR_END          0x0CF //END : end of code.
+
+#define INSTR_MAX          0x0D0 // Maximum instruction opcode value
 
 
 PC bc_gen(bytecode_t* bc, opr_code_t instr);

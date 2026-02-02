@@ -3251,8 +3251,737 @@ static void do_include(vm_t* vm, const char* jsname) {
 	vm->pc = pc;
 }
 
+/* Instruction handler function type for table-based dispatch */
+typedef void (*instr_handler_t)(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset);
+
+/* Instruction handler functions for table-based dispatch */
+
+static inline void handle_jmp(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
+	vm->pc = vm->pc + offset - 1;
+}
+
+static inline void handle_jmpb(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
+	vm->pc = vm->pc - offset - 1;
+}
+
+static inline void handle_njmp(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
+	var_t* v = vm_pop2(vm);
+	if(v->type == V_UNDEF || v->value == NULL || *(int*)(v->value) == 0) {
+		if(instr == INSTR_NJMP) 
+			vm->pc = vm->pc + offset - 1;
+		else
+			vm->pc = vm->pc - offset - 1;
+	}
+	var_unref(v);
+}
+
+static inline void handle_load(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
+	bool loaded = false;
+	if(offset == vm->this_strIndex) {
+		var_t* thisV = vm_this_in_scopes(vm);
+		if(thisV != NULL) {
+			vm_push(vm, thisV);
+			loaded = true;
+		}
+	}
+	if(!loaded) {
+		const char* s = bc_getstr(&vm->bc, offset);
+		node_t* n = NULL;
+		if(instr == INSTR_LOAD) {
+			n = vm_load_node(vm, s, true);
+			vm_push_node(vm, n);
+		}
+		else {
+			n = vm_load_node(vm, s, true);
+			vm_push_node(vm, n);
+			if(n->var->type != V_OBJECT) {
+				mario_debug("[debug] Warning: object or class '%s' undefined, object created.\n", s);
+			}
+		}
+	}
+}
+
+static inline void handle_compare(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
+	var_t* v2 = vm_pop2(vm);
+	var_t* v1 = vm_pop2(vm);
+	compare(vm, instr, v1, v2);
+	var_unref(v1);
+	var_unref(v2);
+}
+
+static inline void handle_nil(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
+	/* Do nothing */
+}
+
+static inline void handle_block(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
+	scope_t* sc = scope_new(var_new_block(vm));
+	sc->is_block = true;
+	if(instr == INSTR_LOOP) {
+		sc->is_loop = true;
+		sc->pc_start = vm->pc+1;
+		sc->pc = vm->pc+2;
+	}
+	else if(instr == INSTR_TRY) {
+		sc->is_try = true;
+		sc->pc = vm->pc+1;
+	}
+	vm_push_scope(vm, sc);
+}
+
+static inline void handle_block_end(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
+	vm_pop_scope(vm);
+}
+
+static inline void handle_break(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
+	while(true) {
+		scope_t* sc = vm_get_scope(vm);
+		if(sc == NULL) {
+			mario_error("Error: 'break' not in any loop!\n");
+			vm_terminate(vm);
+			break;
+		}
+		if(sc->is_loop) {
+			vm->pc = sc->pc;
+			break;
+		}
+		vm_pop_scope(vm);
+	}
+}
+
+static inline void handle_continue(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
+	while(true) {
+		scope_t* sc = vm_get_scope(vm);
+		if(sc == NULL) {
+			mario_error("Error: 'continue' not in any loop!\n");
+			vm_terminate(vm);
+			break;
+		}
+		if(sc->is_loop) {
+			vm->pc = sc->pc_start;
+			break;
+		}
+		vm_pop_scope(vm);
+	}
+}
+
+#ifdef MARIO_CACHE
+static inline void handle_cache(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
+	var_t* v = vm->var_cache[offset];
+	vm_push(vm, v);
+}
+#endif
+
+static inline void handle_true(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
+	vm_push(vm, vm->var_true);
+}
+
+static inline void handle_false(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
+	vm_push(vm, vm->var_false);
+}
+
+static inline void handle_null(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
+	vm_push(vm, vm->var_null);
+}
+
+static inline void handle_undef(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
+	var_t* v = var_new(vm);
+	vm_push(vm, v);
+}
+
+static inline void handle_pop(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
+	vm_pop(vm);
+}
+
+static inline void handle_neg(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
+	var_t* v = vm_pop2(vm);
+	if(v->type == V_INT) {
+		int n = *(int*)v->value;
+		n = -n;
+		vm_push(vm, var_new_int(vm, n));
+	}
+	else if(v->type == V_FLOAT) {
+		float n = *(float*)v->value;
+		n = -n;
+		vm_push(vm, var_new_float(vm, n));
+	}
+	var_unref(v);
+}
+
+static inline void handle_not(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
+	var_t* v = vm_pop2(vm);
+	bool i = false;
+	if(v->type == V_UNDEF || *(int*)v->value == 0)
+		i = true;
+	var_unref(v);
+	vm_push(vm, i ? vm->var_true : vm->var_false);
+}
+
+static inline void handle_logic(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
+	var_t* v2 = vm_pop2(vm);
+	var_t* v1 = vm_pop2(vm);
+	bool r = false;
+	int i1 = *(int*)v1->value;
+	int i2 = *(int*)v2->value;
+
+	if(instr == INSTR_AAND)
+		r = (i1 != 0) && (i2 != 0);
+	else
+		r = (i1 != 0) || (i2 != 0);
+	vm_push(vm, r ? vm->var_true : vm->var_false);
+
+	var_unref(v1);
+	var_unref(v2);
+}
+
+static inline void handle_math(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
+	var_t* v2 = vm_pop2(vm);
+	var_t* v1 = vm_pop2(vm);
+	math_op(vm, instr, v1, v2);
+	var_unref(v1);
+	var_unref(v2);
+}
+
+static inline void handle_mminus_pre(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
+	register PC* code = vm->bc.code_buf;
+	var_t* v = vm_pop2(vm);
+	int *i = (int*)v->value;
+	if(i != NULL) {
+		(*i)--;
+		if((ins & INSTR_OPT_CACHE) == 0) {
+			if(OP(code[vm->pc]) != INSTR_POP) {
+				vm_push(vm, v);
+			}
+			else {
+				code[vm->pc] = INSTR_NIL;
+				code[vm->pc-1] |= INSTR_OPT_CACHE;
+			}
+		}
+		else {
+			vm->pc++;
+		}
+	}
+	else {
+		vm_push(vm, v);
+	}
+	var_unref(v);
+}
+
+static inline void handle_mminus(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
+	register PC* code = vm->bc.code_buf;
+	var_t* v = vm_pop2(vm);
+	int *i = (int*)v->value;
+	if(i != NULL) {
+		if((ins & INSTR_OPT_CACHE) == 0) {
+			var_t* v2 = var_new_int(vm, *i);
+			if(OP(code[vm->pc]) != INSTR_POP) {
+				vm_push(vm, v2);
+			}
+			else {
+				code[vm->pc] = INSTR_NIL;
+				code[vm->pc-1] |= INSTR_OPT_CACHE;
+				var_unref(v2);
+			}
+		}
+		else {
+			vm->pc++;
+		}
+		(*i)--;
+	}
+	else {
+		vm_push(vm, v);
+	}
+	var_unref(v);
+}
+
+static inline void handle_pplus_pre(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
+	register PC* code = vm->bc.code_buf;
+	var_t* v = vm_pop2(vm);
+	int *i = (int*)v->value;
+	if(i != NULL) {
+		(*i)++;
+		if((ins & INSTR_OPT_CACHE) == 0) {
+			if(OP(code[vm->pc]) != INSTR_POP) {
+				vm_push(vm, v);
+			}
+			else {
+				code[vm->pc] = INSTR_NIL;
+				code[vm->pc-1] |= INSTR_OPT_CACHE;
+			}
+		}
+		else {
+			vm->pc++;
+		}
+	}
+	else {
+		vm_push(vm, v);
+	}
+	var_unref(v);
+}
+
+static inline void handle_pplus(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
+	register PC* code = vm->bc.code_buf;
+	var_t* v = vm_pop2(vm);
+	int *i = (int*)v->value;
+	if(i != NULL) {
+		if((ins & INSTR_OPT_CACHE) == 0) {
+			var_t* v2 = var_new_int(vm, *i);
+			if(OP(code[vm->pc]) != INSTR_POP) {
+				vm_push(vm, v2);
+			}
+			else {
+				code[vm->pc] = INSTR_NIL;
+				code[vm->pc-1] |= INSTR_OPT_CACHE;
+				var_unref(v2);
+			}
+		}
+		else {
+			vm->pc++;
+		}
+		(*i)++;
+	}
+	else {
+		vm_push(vm, v);
+	}
+	var_unref(v);
+}
+
+static inline void handle_return(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
+	if(instr == INSTR_RETURN) {
+		var_t* thisV = vm_this_in_scopes(vm);
+		if(thisV != NULL)
+			vm_push(vm, thisV);
+		else
+			vm_push(vm, var_new(vm));
+	}
+	else {
+		var_t* ret = vm_pop2(vm);
+		vm_push(vm, ret);
+		var_unref(ret);
+	}
+
+	while(true) {
+		scope_t* sc = vm_get_scope(vm);
+		if(sc == NULL) break;
+		if(sc->is_func) {
+			vm->pc = sc->pc;
+			vm_pop_scope(vm);
+			break;
+		}
+		vm_pop_scope(vm);
+	}
+}
+
+static inline void handle_var(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
+	const char* s = bc_getstr(&vm->bc, offset);
+	node_t *node = vm_find(vm, s);
+	if(node != NULL) {
+		mario_debug("[debug] Warning: '%s' has already existed!\n", s);
+	}
+	else {
+		var_t* v = vm_get_scope_var(vm);
+		if(v != NULL) {
+			node = var_add(v, s, NULL);
+		}
+	}
+}
+
+static inline void handle_const(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
+	const char* s = bc_getstr(&vm->bc, offset);
+	var_t* v = vm_get_scope_var(vm);
+	node_t *node = var_find(v, s);
+	if(node != NULL) {
+		mario_error("Error: let '%s' has already existed!\n", s);
+		vm_terminate(vm);
+	}
+	else {
+		node = var_add(v, s, NULL);
+		if(node != NULL && instr == INSTR_CONST)
+			node->be_const = true;
+	}
+}
+
+static inline void handle_int(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
+	register PC* code = vm->bc.code_buf;
+	var_t* v = var_new_int(vm, (int)code[vm->pc++]);
+	vm_push(vm, v);
+}
+
+static inline void handle_int_s(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
+	var_t* v = var_new_int(vm, offset);
+	vm_push(vm, v);
+}
+
+static inline void handle_float(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
+	register PC* code = vm->bc.code_buf;
+	var_t* v = var_new_float(vm, *(float*)(&code[vm->pc++]));
+	vm_push(vm, v);
+}
+
+static inline void handle_str(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
+	const char* s = bc_getstr(&vm->bc, offset);
+	var_t* v = var_new_str(vm, s);
+	vm_push(vm, v);
+}
+
+static inline void handle_asign(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
+	register PC* code = vm->bc.code_buf;
+	var_t* v = vm_pop2(vm);
+	node_t* n = vm_pop2node(vm);
+	bool modi = (!n->be_const || n->var->type == V_UNDEF);
+	var_unref(n->var);
+	if(modi)
+		node_replace(n, v);
+	else {
+		mario_error("Error: Can not change a const variable: '%s'!\n", n->name);
+	}
+
+	if((ins & INSTR_OPT_CACHE) == 0) {
+		if(OP(code[vm->pc]) != INSTR_POP) {
+			vm_push(vm, n->var);
+		}
+		else {
+			code[vm->pc] = INSTR_NIL;
+			code[vm->pc-1] |= INSTR_OPT_CACHE;
+		}
+	}
+	else {
+		vm->pc++;
+	}
+	var_unref(v);
+}
+
+static inline void handle_get(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
+	const char* s = bc_getstr(&vm->bc, offset);
+	var_t* v = vm_pop2(vm);
+	var_build_basic_prototype(vm, v);
+	do_get(vm, v, s);
+	var_unref(v);
+}
+
+static inline void handle_new(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
+	const char* s = bc_getstr(&vm->bc, offset);
+	if(!do_new(vm, s))
+		vm_terminate(vm);
+}
+
+static inline void handle_call(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
+	var_t* func = NULL;
+	var_t* obj = NULL;
+	bool unrefObj = false;
+	const char* s = bc_getstr(&vm->bc, offset);
+	mstr_t* name = mstr_new("");
+	int arg_num = parse_func_name(s, name);
+	var_t* sc_var = vm_get_scope_var(vm);
+
+	if(instr == INSTR_CALLO) {
+		obj = vm_stack_pick(vm, arg_num+1);
+		var_build_basic_prototype(vm, obj);
+		unrefObj = true;
+	}
+	else {
+		obj = vm_this_in_scopes(vm);
+		func = find_func(vm, sc_var, name->cstr);
+	}
+
+	if(func == NULL && obj != NULL)
+		func = find_func(vm, obj, name->cstr);
+
+	if(func != NULL && !func->is_func) {
+		var_t* constr = var_find_var(func, CONSTRUCTOR);
+		if(constr == NULL) {
+			var_t* protoV = var_get_prototype(func);
+			if(protoV != NULL)
+				func = var_find_var(protoV, CONSTRUCTOR);
+			else
+				func = NULL;
+		}
+		else {
+			func = constr;
+		}
+	}
+
+	if(func != NULL) {
+		func_call(vm, obj, func, arg_num);
+	}
+	else {
+		while(arg_num > 0) {
+			vm_pop(vm);
+			arg_num--;
+		}
+		vm_push(vm, var_new(vm));
+		mario_error("Error: can not find function '%s'!\n", name->cstr);
+	}
+	mstr_free(name);
+
+	if(unrefObj && obj != NULL)
+		var_unref(obj);
+
+#ifdef MARIO_THREAD
+	try_interrupter(vm);
+#endif
+}
+
+static inline void handle_member(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
+	const char* s = (instr == INSTR_MEMBER ? "" : bc_getstr(&vm->bc, offset));
+	var_t* v = vm_pop2(vm);
+	if(v == NULL)
+		v = var_new(vm);
+
+	var_t *var = vm_get_scope_var(vm);
+	if(var->is_array) {
+		var_array_add(var, v);
+	}
+	else {
+		if(v->is_func) {
+			func_t* func = (func_t*)v->value;
+			func->owner = var;
+		}
+		var_add(var, s, v);
+	}
+	var_unref(v);
+}
+
+static inline void handle_func(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
+	var_t* v = func_def(vm,
+			(instr == INSTR_FUNC ? true : false),
+			(instr == INSTR_FUNC_STC ? true : false));
+	if(v != NULL) {
+		func_mark_closure(vm, v);
+		vm_push(vm, v);
+	}
+}
+
+static inline void handle_obj(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
+	var_t* obj;
+	if(instr == INSTR_OBJ) {
+		obj = var_new_obj(vm, NULL, NULL);
+		var_set_prototype(obj, var_get_prototype(vm->var_Object));
+	}
+	else
+		obj = var_new_array(vm);
+	scope_t* sc = scope_new(obj);
+	vm_push_scope(vm, sc);
+}
+
+static inline void handle_obj_end(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
+	var_t* obj = vm_get_scope_var(vm);
+	vm_push(vm, obj);
+	vm_pop_scope(vm);
+}
+
+static inline void handle_array_at(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
+	var_t* v2 = vm_pop2(vm);
+	var_t* v1 = vm_pop2(vm);
+	node_t* n = NULL;
+	if(v2->type == V_STRING) {
+		const char* s = var_get_str(v2);
+		n = var_find(v1, s);
+	}
+	else {
+		int at = var_get_int(v2);
+		n = var_array_get(v1, at);
+	}
+	if(n != NULL)
+		vm_push_node(vm, n);
+	else
+		vm_push(vm, var_new(vm));
+	var_unref(v1);
+	var_unref(v2);
+}
+
+static inline void handle_class(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
+	register PC* code = vm->bc.code_buf;
+	const char* s = bc_getstr(&vm->bc, offset);
+	var_t* cls_var = vm_new_class(vm, s);
+	ins = code[vm->pc];
+	instr = OP(ins);
+	if(instr == INSTR_EXTENDS) {
+		vm->pc++;
+		offset = OFF(ins);
+		s = bc_getstr(&vm->bc, offset);
+		do_extends(vm, cls_var, s);
+	}
+
+	var_t* protoV = var_get_prototype(cls_var);
+	scope_t* sc = scope_new(protoV);
+	vm_push_scope(vm, sc);
+}
+
+static inline void handle_class_end(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
+	var_t* var = vm_get_scope_var(vm);
+	vm_push(vm, var);
+	vm_pop_scope(vm);
+}
+
+static inline void handle_instof(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
+	var_t* v2 = vm_pop2(vm);
+	var_t* v1 = vm_pop2(vm);
+	bool res = var_instanceof(v1, v2);
+	var_unref(v2);
+	var_unref(v1);
+	vm_push(vm, var_new_bool(vm, res));
+}
+
+static inline void handle_typeof(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
+	var_t* var = vm_pop2(vm);
+	var_t* v = var_new_str(vm, get_typeof(var));
+	vm_push(vm, v);
+}
+
+static inline void handle_include(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
+	var_t* v = vm_pop2(vm);
+	do_include(vm, var_get_str(v));
+	var_unref(v);
+}
+
+static inline void handle_throw(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
+	while(true) {
+		scope_t* sc = vm_get_scope(vm);
+		if(sc == NULL) {
+			mario_error("Error: 'throw' not in any try...catch!\n");
+			vm_terminate(vm);
+			break;
+		}
+		if(sc->is_try) {
+			vm->pc = sc->pc;
+			break;
+		}
+		vm_pop_scope(vm);
+	}
+}
+
+static inline void handle_catch(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
+	const char* s = bc_getstr(&vm->bc, offset);
+	var_t* v = vm_pop2(vm);
+	var_t* sc_var = vm_get_scope_var(vm);
+	var_add(sc_var, s, v);
+	var_unref(v);
+}
+
+/* Instruction handler table - initialized at startup */
+static instr_handler_t instr_table[INSTR_MAX];
+static bool instr_table_initialized = false;
+
+/* Initialize instruction handler table */
+static void init_instr_table(void) {
+	if(instr_table_initialized) return;
+
+	/* Initialize all entries to handle_nil (safe default) */
+	for(int i = 0; i < INSTR_MAX; i++) {
+		instr_table[i] = handle_nil;
+	}
+
+	/* Register instruction handlers */
+	instr_table[INSTR_NIL] = handle_nil;
+	instr_table[INSTR_VAR] = handle_var;
+	instr_table[INSTR_CONST] = handle_const;
+	instr_table[INSTR_LOAD] = handle_load;
+	instr_table[INSTR_LOADO] = handle_load;
+	instr_table[INSTR_GET] = handle_get;
+	instr_table[INSTR_ASIGN] = handle_asign;
+
+	instr_table[INSTR_INT] = handle_int;
+	instr_table[INSTR_INT_S] = handle_int_s;
+	instr_table[INSTR_FLOAT] = handle_float;
+	instr_table[INSTR_STR] = handle_str;
+	instr_table[INSTR_ARRAY_AT] = handle_array_at;
+	instr_table[INSTR_ARRAY] = handle_obj;
+	instr_table[INSTR_ARRAY_END] = handle_obj_end;
+	instr_table[INSTR_SAFE_VAR] = handle_const;
+
+	instr_table[INSTR_FUNC] = handle_func;
+	instr_table[INSTR_FUNC_GET] = handle_func;
+	instr_table[INSTR_FUNC_SET] = handle_func;
+	instr_table[INSTR_CALL] = handle_call;
+	instr_table[INSTR_CALLO] = handle_call;
+	instr_table[INSTR_CLASS] = handle_class;
+	instr_table[INSTR_CLASS_END] = handle_class_end;
+	instr_table[INSTR_MEMBER] = handle_member;
+	instr_table[INSTR_MEMBERN] = handle_member;
+	instr_table[INSTR_FUNC_STC] = handle_func;
+
+	instr_table[INSTR_NOT] = handle_not;
+	instr_table[INSTR_MULTI] = handle_math;
+	instr_table[INSTR_DIV] = handle_math;
+	instr_table[INSTR_MOD] = handle_math;
+	instr_table[INSTR_PLUS] = handle_math;
+	instr_table[INSTR_MINUS] = handle_math;
+	instr_table[INSTR_NEG] = handle_neg;
+	instr_table[INSTR_PPLUS] = handle_pplus;
+	instr_table[INSTR_MMINUS] = handle_mminus;
+	instr_table[INSTR_PPLUS_PRE] = handle_pplus_pre;
+	instr_table[INSTR_MMINUS_PRE] = handle_mminus_pre;
+	instr_table[INSTR_LSHIFT] = handle_math;
+	instr_table[INSTR_RSHIFT] = handle_math;
+
+	instr_table[INSTR_EQ] = handle_compare;
+	instr_table[INSTR_NEQ] = handle_compare;
+	instr_table[INSTR_LEQ] = handle_compare;
+	instr_table[INSTR_GEQ] = handle_compare;
+	instr_table[INSTR_GRT] = handle_compare;
+	instr_table[INSTR_LES] = handle_compare;
+	instr_table[INSTR_PLUSEQ] = handle_math;
+	instr_table[INSTR_MINUSEQ] = handle_math;
+	instr_table[INSTR_MULTIEQ] = handle_math;
+	instr_table[INSTR_DIVEQ] = handle_math;
+	instr_table[INSTR_MODEQ] = handle_math;
+
+	instr_table[INSTR_AAND] = handle_logic;
+	instr_table[INSTR_OOR] = handle_logic;
+	instr_table[INSTR_AND] = handle_math;
+	instr_table[INSTR_OR] = handle_math;
+
+	instr_table[INSTR_TEQ] = handle_compare;
+	instr_table[INSTR_NTEQ] = handle_compare;
+	instr_table[INSTR_TYPEOF] = handle_typeof;
+
+	instr_table[INSTR_BREAK] = handle_break;
+	instr_table[INSTR_CONTINUE] = handle_continue;
+	instr_table[INSTR_RETURN] = handle_return;
+	instr_table[INSTR_RETURNV] = handle_return;
+
+	instr_table[INSTR_NJMP] = handle_njmp;
+	instr_table[INSTR_JMPB] = handle_jmpb;
+	instr_table[INSTR_NJMPB] = handle_njmp;
+	instr_table[INSTR_JMP] = handle_jmp;
+
+	instr_table[INSTR_TRUE] = handle_true;
+	instr_table[INSTR_FALSE] = handle_false;
+	instr_table[INSTR_NULL] = handle_null;
+	instr_table[INSTR_UNDEF] = handle_undef;
+
+	instr_table[INSTR_NEW] = handle_new;
+#ifdef MARIO_CACHE
+	instr_table[INSTR_CACHE] = handle_cache;
+#endif
+
+	instr_table[INSTR_POP] = handle_pop;
+
+	instr_table[INSTR_OBJ] = handle_obj;
+	instr_table[INSTR_OBJ_END] = handle_obj_end;
+
+	instr_table[INSTR_BLOCK] = handle_block;
+	instr_table[INSTR_BLOCK_END] = handle_block_end;
+	instr_table[INSTR_LOOP] = handle_block;
+	instr_table[INSTR_LOOP_END] = handle_block_end;
+	instr_table[INSTR_TRY] = handle_block;
+	instr_table[INSTR_TRY_END] = handle_block_end;
+
+	instr_table[INSTR_THROW] = handle_throw;
+	instr_table[INSTR_CATCH] = handle_catch;
+	instr_table[INSTR_INSTOF] = handle_instof;
+
+	instr_table[INSTR_INCLUDE] = handle_include;
+
+	instr_table_initialized = true;
+}
+
 bool vm_run(vm_t* vm) {
-	//int32_t scDeep = vm->scopes.size;
+	/* Initialize instruction table on first run */
+	if(!instr_table_initialized) {
+		init_instr_table();
+	}
+
 	register PC code_size = vm->bc.cindex;
 	register PC* code = vm->bc.code_buf;
 
@@ -3263,708 +3992,13 @@ bool vm_run(vm_t* vm) {
 
 		if(instr == INSTR_END)
 			break;
-		
-		switch(instr) {
-			case INSTR_JMP: 
-			{
-				vm->pc = vm->pc + offset - 1;
-				break;
-			}
-			case INSTR_JMPB: 
-			{
-				vm->pc = vm->pc - offset - 1;
-				break;
-			}
-			case INSTR_NJMP: 
-			case INSTR_NJMPB: 
-			{
-				var_t* v = vm_pop2(vm);
-				if(v->type == V_UNDEF ||
-						v->value == NULL ||
-						*(int*)(v->value) == 0) {
-					if(instr == INSTR_NJMP) 
-						vm->pc = vm->pc + offset - 1;
-					else
-						vm->pc = vm->pc - offset - 1;
-				}
-				var_unref(v);
-				break;
-			}
-			case INSTR_LOAD: 
-			case INSTR_LOADO: 
-			{
-				bool loaded = false;
-				if(offset == vm->this_strIndex) {
-					var_t* thisV = vm_this_in_scopes(vm);
-					if(thisV != NULL) {
-						vm_push(vm, thisV);	
-						loaded = true;	
-					}
-				}
-				if(!loaded) {
-					const char* s = bc_getstr(&vm->bc, offset);
-					node_t* n = NULL;
-					if(instr == INSTR_LOAD) {
-						n = vm_load_node(vm, s, true); //load variable, create if not exist.
-						vm_push_node(vm, n);
-					}
-					else { // LOAD obj
-						n = vm_load_node(vm, s, true); //load variable, warning if not exist.
-						vm_push_node(vm, n);
-						if(n->var->type != V_OBJECT) {
-							mario_debug("[debug] Warning: object or class '%s' undefined, object created.\n", s);
-						}
-					}
-				}
-				break;
-			}
-			case INSTR_LES: 
-			case INSTR_EQ: 
-			case INSTR_NEQ: 
-			case INSTR_TEQ:
-			case INSTR_NTEQ:
-			case INSTR_GRT: 
-			case INSTR_LEQ: 
-			case INSTR_GEQ: 
-			{
-				var_t* v2 = vm_pop2(vm);
-				var_t* v1 = vm_pop2(vm);
-				compare(vm, instr, v1, v2);
-				var_unref(v1);
-				var_unref(v2);
-				break;
-			}
-			case INSTR_NIL: 
-			{	
-				break; 
-			}
-			case INSTR_BLOCK: 
-			case INSTR_LOOP: 
-			case INSTR_TRY: 
-			{
-				scope_t* sc = NULL;
-				sc = scope_new(var_new_block(vm));
-				sc->is_block = true;
-				if(instr == INSTR_LOOP) {
-					sc->is_loop = true;
-					sc->pc_start = vm->pc+1;
-					sc->pc = vm->pc+2;
-				}
-				else if(instr == INSTR_TRY) {
-					sc->is_try = true;
-					sc->pc = vm->pc+1;
-				}
-				vm_push_scope(vm, sc);
-				break;
-			}
-			case INSTR_BLOCK_END: 
-			case INSTR_LOOP_END: 
-			case INSTR_TRY_END: 
-			{
-				vm_pop_scope(vm);
-				break;
-			}
-			case INSTR_BREAK: 
-			{
-				while(true) {
-					scope_t* sc = vm_get_scope(vm);
-					if(sc == NULL) {
-						mario_error("Error: 'break' not in any loop!\n");
-						vm_terminate(vm);
-						break;
-					}
-					if(sc->is_loop) {
-						vm->pc = sc->pc;
-						break;
-					}
-					vm_pop_scope(vm);
-				}
-				break;
-			}
-			case INSTR_CONTINUE:
-			{
-				while(true) {
-					scope_t* sc = vm_get_scope(vm);
-					if(sc == NULL) {
-						mario_error("Error: 'continue' not in any loop!\n");
-						vm_terminate(vm);
-						break;
-					}
-					if(sc->is_loop) {
-						vm->pc = sc->pc_start;
-						break;
-					}
-					vm_pop_scope(vm);
-				}
-				break;
-			}
-			#ifdef MARIO_CACHE
-			case INSTR_CACHE: 
-			{	
-				var_t* v = vm->var_cache[offset];
-				vm_push(vm, v);
-				break;
-			}
-			#endif
-			case INSTR_TRUE: 
-			{
-				vm_push(vm, vm->var_true);
-				break;
-			}
-			case INSTR_FALSE: 
-			{
-				vm_push(vm, vm->var_false);
-				break;
-			}
-			case INSTR_NULL: 
-			{
-				vm_push(vm, vm->var_null);
-				break;
-			}
-			case INSTR_UNDEF: 
-			{
-				var_t* v = var_new(vm);	
-				vm_push(vm, v);
-				break;
-			}
-			case INSTR_POP: 
-			{
-				vm_pop(vm);
-				break;
-			}
-			case INSTR_NEG: 
-			{
-				var_t* v = vm_pop2(vm);
-				if(v->type == V_INT) {
-					int n = *(int*)v->value;
-					n = -n;
-					vm_push(vm, var_new_int(vm, n));
-				}
-				else if(v->type == V_FLOAT) {
-					float n = *(float*)v->value;
-					n = -n;
-					vm_push(vm, var_new_float(vm, n));
-				}
-				var_unref(v);
-				break;
-			}
-			case INSTR_NOT: 
-			{
-				var_t* v = vm_pop2(vm);
-				bool i = false;
-				if(v->type == V_UNDEF || *(int*)v->value == 0)
-					i = true;
-				var_unref(v);
-				vm_push(vm, i ? vm->var_true:vm->var_false);
-				break;
-			}
-			case INSTR_AAND: 
-			case INSTR_OOR: 
-			{
-				var_t* v2 = vm_pop2(vm);
-				var_t* v1 = vm_pop2(vm);
-				bool r = false;
-				int i1 = *(int*)v1->value;
-				int i2 = *(int*)v2->value;
 
-				if(instr == INSTR_AAND)
-					r = (i1 != 0) && (i2 != 0);
-				else
-					r = (i1 != 0) || (i2 != 0);
-				vm_push(vm, r ? vm->var_true:vm->var_false);
+		/* Table-based instruction dispatch */
+		instr_table[instr](vm, ins, instr, offset);
 
-				var_unref(v1);
-				var_unref(v2);
-				break;
-			}
-			case INSTR_PLUS: 
-			case INSTR_RSHIFT: 
-			case INSTR_LSHIFT: 
-			case INSTR_AND: 
-			case INSTR_OR: 
-			case INSTR_PLUSEQ: 
-			case INSTR_MULTIEQ: 
-			case INSTR_DIVEQ: 
-			case INSTR_MODEQ: 
-			case INSTR_MINUS: 
-			case INSTR_MINUSEQ: 
-			case INSTR_DIV: 
-			case INSTR_MULTI: 
-			case INSTR_MOD:
-			{
-				var_t* v2 = vm_pop2(vm);
-				var_t* v1 = vm_pop2(vm);
-				math_op(vm, instr, v1, v2);
-				var_unref(v1);
-				var_unref(v2);
-				break;
-			}
-			case INSTR_MMINUS_PRE: 
-			{
-				var_t* v = vm_pop2(vm);
-				int *i = (int*)v->value;
-				if(i != NULL) {
-					(*i)--;
-					if((ins & INSTR_OPT_CACHE) == 0) {
-						if(OP(code[vm->pc]) != INSTR_POP) { 
-							vm_push(vm, v);
-						}
-						else { 
-							code[vm->pc] = INSTR_NIL;
-							code[vm->pc-1] |= INSTR_OPT_CACHE; 
-						}
-					}
-					else { //skip the nil if cached
-						vm->pc++;
-					}
-				}
-				else {
-					vm_push(vm, v);
-				}
-				var_unref(v);
-				break;
-			}
-			case INSTR_MMINUS: 
-			{
-				var_t* v = vm_pop2(vm);
-				int *i = (int*)v->value;
-				if(i != NULL) {
-					if((ins & INSTR_OPT_CACHE) == 0) {
-						var_t* v2 = var_new_int(vm, *i);
-						if(OP(code[vm->pc]) != INSTR_POP) {
-							vm_push(vm, v2);
-						}
-						else { 
-							code[vm->pc] = INSTR_NIL; 
-							code[vm->pc-1] |= INSTR_OPT_CACHE;
-							var_unref(v2);
-						}
-					}
-					else { //skip the nil if cached
-						vm->pc++;
-					}
-					(*i)--;
-				}
-				else {
-					vm_push(vm, v);
-				}
-				var_unref(v);
-				break;
-			}
-			case INSTR_PPLUS_PRE: 
-			{
-				var_t* v = vm_pop2(vm);
-				int *i = (int*)v->value;
-				if(i != NULL) {
-					(*i)++;
-					if((ins & INSTR_OPT_CACHE) == 0) {
-						if(OP(code[vm->pc]) != INSTR_POP) { 
-							vm_push(vm, v);
-						}
-						else { 
-							code[vm->pc] = INSTR_NIL; 
-							code[vm->pc-1] |= INSTR_OPT_CACHE; 
-						}
-					}
-					else { //skip the nil if cached
-						vm->pc++;
-					}
-				}
-				else {
-					vm_push(vm, v);
-				}
-				var_unref(v);
-				break;
-			}
-			case INSTR_PPLUS: 
-			{
-				var_t* v = vm_pop2(vm);
-				int *i = (int*)v->value;
-				if(i != NULL) {
-					if((ins & INSTR_OPT_CACHE) == 0) {
-						var_t* v2 = var_new_int(vm, *i);
-						if(OP(code[vm->pc]) != INSTR_POP) {
-							vm_push(vm, v2);
-						}
-						else { 
-							code[vm->pc] = INSTR_NIL;
-							code[vm->pc-1] |= INSTR_OPT_CACHE; 
-							var_unref(v2);
-						}
-					}
-					else { //skip the nil if cached
-						vm->pc++;
-					}
-					(*i)++;
-				}
-				else {
-					vm_push(vm, v);
-				}
-				var_unref(v);
-				break;
-			}
-			case INSTR_RETURN:  //return without value
-			case INSTR_RETURNV: 
-			{ //return with value
-				if(instr == INSTR_RETURN) {//return without value, push "this" to stack
-					var_t* thisV = vm_this_in_scopes(vm);
-					if(thisV != NULL)
-						vm_push(vm, thisV);
-					else
-						vm_push(vm, var_new(vm));
-				}
-				else { //return with value;
-					var_t* ret = vm_pop2(vm); // if node in stack, just restore the var value.
-					vm_push(vm, ret);
-					var_unref(ret);
-				}
-
-				while(true) {
-					scope_t* sc = vm_get_scope(vm);
-					if(sc == NULL) break;
-					if(sc->is_func) {
-						vm->pc = sc->pc;
-						vm_pop_scope(vm);
-						break;
-					}
-					vm_pop_scope(vm);
-				}
-				return true;
-			}
-			case INSTR_VAR:
-			{
-				const char* s = bc_getstr(&vm->bc, offset);
-				node_t *node = vm_find(vm, s);
-				if(node != NULL) { //find just in current scope
-					mario_debug("[debug] Warning: '%s' has already existed!\n", s);
-				}
-				else {
-					var_t* v = vm_get_scope_var(vm);
-					if(v != NULL) {
-						node = var_add(v, s, NULL);
-					}
-				}
-				break;
-			}
-			case INSTR_SAFE_VAR:
-			case INSTR_CONST: 
-			{
-				const char* s = bc_getstr(&vm->bc, offset);
-				var_t* v = vm_get_scope_var(vm);
-				node_t *node = var_find(v, s);
-				if(node != NULL) { //find just in current scope
-					mario_error("Error: let '%s' has already existed!\n", s);
-					vm_terminate(vm);
-				}
-				else {
-					node = var_add(v, s, NULL);
-					if(node != NULL && instr == INSTR_CONST)
-						node->be_const = true;
-				}
-				break;
-			}
-			case INSTR_INT:
-			{
-				var_t* v = var_new_int(vm, (int)code[vm->pc++]);
-				/*#ifdef MARIO_CACHE
-				if(try_cache(vm, &code[vm->pc-2], v))
-					code[vm->pc-1] = INSTR_NIL;
-				#endif
-				*/
-				vm_push(vm, v);
-				break;
-			}
-			case INSTR_INT_S:
-			{
-				var_t* v = var_new_int(vm, offset);
-				/*#ifdef MARIO_CACHE
-				try_cache(vm, &code[vm->pc-1], v);
-				#endif
-				*/
-				vm_push(vm, v);
-				break;
-			}
-			case INSTR_FLOAT: 
-			{
-				var_t* v = var_new_float(vm, *(float*)(&code[vm->pc++]));
-				/*#ifdef MARIO_CACHE
-				if(try_cache(vm, &code[vm->pc-2], v))
-					code[vm->pc-1] = INSTR_NIL;
-				#endif
-				*/
-				vm_push(vm, v);
-				break;
-			}
-			case INSTR_STR: 
-			{
-				const char* s = bc_getstr(&vm->bc, offset);
-				var_t* v = var_new_str(vm, s);
-				/*
-				#ifdef MARIO_CACHE	
-				try_cache(vm, &code[vm->pc-1], v);
-				#endif
-				*/
-				vm_push(vm, v);
-				break;
-			}
-			case INSTR_ASIGN: 
-			{
-				var_t* v = vm_pop2(vm);
-				node_t* n = vm_pop2node(vm);
-				bool modi = (!n->be_const || n->var->type == V_UNDEF);
-				var_unref(n->var);
-				if(modi) 
-					node_replace(n, v);
-				else {
-					mario_error("Error: Can not change a const variable: '%s'!\n", n->name);
-				}
-
-				if((ins & INSTR_OPT_CACHE) == 0) {
-					if(OP(code[vm->pc]) != INSTR_POP) {
-						vm_push(vm, n->var);
-					}
-					else { 
-						code[vm->pc] = INSTR_NIL;
-						code[vm->pc-1] |= INSTR_OPT_CACHE;
-					}
-				}
-				else { //skip the nil if cached
-					vm->pc++;
-				}
-				var_unref(v);
-				break;
-			}
-			case INSTR_GET: 
-			{
-				const char* s = bc_getstr(&vm->bc, offset);
-				var_t* v = vm_pop2(vm);
-				var_build_basic_prototype(vm, v);
-				do_get(vm, v, s);
-				var_unref(v);
-				break;
-			}
-			case INSTR_NEW: 
-			{
-				const char* s = bc_getstr(&vm->bc, offset);
-				if(!do_new(vm, s)) 
-					vm_terminate(vm);
-				break;
-			}
-			case INSTR_CALL: 
-			case INSTR_CALLO: 
-			{
-				var_t* func = NULL;
-				var_t* obj = NULL;
-				bool unrefObj = false;
-				const char* s = bc_getstr(&vm->bc, offset);
-				mstr_t* name = mstr_new("");
-				int arg_num = parse_func_name(s, name);
-				var_t* sc_var = vm_get_scope_var(vm);
-				
-				if(instr == INSTR_CALLO) {
-					obj = vm_stack_pick(vm, arg_num+1);
-					var_build_basic_prototype(vm, obj);
-					unrefObj = true;
-				}
-				else {
-					obj = vm_this_in_scopes(vm);
-					func = find_func(vm, sc_var, name->cstr);
-				}
-
-				if(func == NULL && obj != NULL)
-					func = find_func(vm, obj, name->cstr);
-
-				if(func != NULL && !func->is_func) { //constructor like super()
-					var_t* constr = var_find_var(func, CONSTRUCTOR);	
-					if(constr == NULL) {
-						var_t* protoV = var_get_prototype(func);
-						if(protoV != NULL) 
-							func = var_find_var(protoV, CONSTRUCTOR);	
-						else
-							func = NULL;
-					}
-					else {
-						func = constr;
-					}
-				}
-
-				if(func != NULL) {
-					func_call(vm, obj, func, arg_num);
-				}
-				else {
-					while(arg_num > 0) {
-						vm_pop(vm);
-						arg_num--;
-					}
-					vm_push(vm, var_new(vm));
-					mario_error("Error: can not find function '%s'!\n", name->cstr);
-				}
-				mstr_free(name);
-
-				if(unrefObj && obj != NULL)
-					var_unref(obj);
-
-				//check and do interrupter.
-				#ifdef MARIO_THREAD
-				try_interrupter(vm);
-				#endif
-				break;
-			}
-			case INSTR_MEMBER: 
-			case INSTR_MEMBERN: 
-			{
-				const char* s = (instr == INSTR_MEMBER ? "" :  bc_getstr(&vm->bc, offset));
-				var_t* v = vm_pop2(vm);
-				if(v == NULL) 
-					v = var_new(vm);
-				
-				var_t *var = vm_get_scope_var(vm);
-				if(var->is_array) {
-					var_array_add(var, v);
-				}
-				else {
-					if(v->is_func) {
-						func_t* func = (func_t*)v->value;
-						func->owner = var;
-					}
-					var_add(var, s, v);
-				}
-				var_unref(v);
-				break;
-			}
-			case INSTR_FUNC: 
-			case INSTR_FUNC_STC: 
-			case INSTR_FUNC_GET: 
-			case INSTR_FUNC_SET: 
-			{
-				var_t* v = func_def(vm, 
-						(instr == INSTR_FUNC ? true:false),
-						(instr == INSTR_FUNC_STC ? true:false));
-				if(v != NULL) {
-					func_mark_closure(vm, v);
-					vm_push(vm, v);
-				}
-				break;
-			}
-			case INSTR_OBJ:
-			case INSTR_ARRAY: 
-			{
-				var_t* obj;
-				if(instr == INSTR_OBJ) {
-					obj = var_new_obj(vm, NULL, NULL);
-					var_set_prototype(obj, var_get_prototype(vm->var_Object));
-				}
-				else
-					obj = var_new_array(vm);
-				scope_t* sc = scope_new(obj);
-				vm_push_scope(vm, sc);
-				break;
-			}
-			case INSTR_ARRAY_END: 
-			case INSTR_OBJ_END: 
-			{
-				var_t* obj = vm_get_scope_var(vm);
-				vm_push(vm, obj); //that actually means currentObj->ref() for push and unref for unasign.
-				vm_pop_scope(vm);
-				break;
-			}
-			case INSTR_ARRAY_AT: 
-			{
-				var_t* v2 = vm_pop2(vm);
-				var_t* v1 = vm_pop2(vm);
-				node_t* n = NULL;
-				if(v2->type == V_STRING) {
-					const char* s = var_get_str(v2);
-					n = var_find(v1, s);
-				}
-				else {
-					int at = var_get_int(v2);
-					n = var_array_get(v1, at);
-				}
-				if(n != NULL) 
-					vm_push_node(vm, n);
-				else
-					vm_push(vm, var_new(vm));
-				var_unref(v1);
-				var_unref(v2);
-				break;
-			}
-			case INSTR_CLASS: 
-			{
-				const char* s =  bc_getstr(&vm->bc, offset);
-				var_t* cls_var = vm_new_class(vm, s);
-				//read extends
-				ins = code[vm->pc];
-				instr = OP(ins);
-				if(instr == INSTR_EXTENDS) {
-					vm->pc++;
-					offset = OFF(ins);
-					s =  bc_getstr(&vm->bc, offset);
-					do_extends(vm, cls_var, s);
-				}
-
-				var_t* protoV = var_get_prototype(cls_var);
-				scope_t* sc = scope_new(protoV);
-				vm_push_scope(vm, sc);
-				break;
-			}
-			case INSTR_CLASS_END: 
-			{
-				var_t* var = vm_get_scope_var(vm);
-				vm_push(vm, var);
-				vm_pop_scope(vm);
-				break;
-			}
-			case INSTR_INSTOF: 
-			{
-				var_t* v2 = vm_pop2(vm);
-				var_t* v1 = vm_pop2(vm);
-				bool res = var_instanceof(v1, v2);
-				var_unref(v2);
-				var_unref(v1);
-				vm_push(vm, var_new_bool(vm, res));
-				break;
-			}
-			case INSTR_TYPEOF: 
-			{
-				var_t* var = vm_pop2(vm);
-				var_t* v = var_new_str(vm, get_typeof(var));
-				vm_push(vm, v);
-				break;
-			}
-			case INSTR_INCLUDE: 
-			{
-				var_t* v = vm_pop2(vm);
-				do_include(vm, var_get_str(v));
-				var_unref(v);
-				break;
-			}
-			case INSTR_THROW: 
-			{
-				while(true) {
-					scope_t* sc = vm_get_scope(vm);
-					if(sc == NULL) {
-						mario_error("Error: 'throw' not in any try...catch!\n");
-						vm_terminate(vm);
-						break;
-					}
-					if(sc->is_try) {
-						vm->pc = sc->pc;
-						break;
-					}
-					vm_pop_scope(vm);
-				}
-				break;
-			}
-			case INSTR_CATCH: 
-			{
-				const char* s = bc_getstr(&vm->bc, offset);
-				var_t* v = vm_pop2(vm);
-				var_t* sc_var = vm_get_scope_var(vm);
-				var_add(sc_var, s, v);
-				var_unref(v);
-				break;
-			}
+		/* Handle return instructions */
+		if(instr == INSTR_RETURN || instr == INSTR_RETURNV) {
+			return true;
 		}
 	}
 	while(vm->pc < code_size && !vm->terminated);
