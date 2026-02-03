@@ -4260,7 +4260,7 @@ vm_t* vm_from(vm_t* vm) {
 	return ret;
 }
 
-static var_t* native_debug(vm_t* vm, var_t* env, void* data) {
+/*static var_t* native_debug(vm_t* vm, var_t* env, void* data) {
 	(void)vm; (void)data;
 
 	var_t* args = get_func_args(env); 
@@ -4281,12 +4281,7 @@ static var_t* native_debug(vm_t* vm, var_t* env, void* data) {
 	mstr_free(ret);
 	return NULL;
 }
-
-/**yield */
-static var_t* native_yield(vm_t* vm, var_t* env, void* data) {
-	(void)vm; (void)data; (void)env;
-	return NULL;
-}
+*/
 
 #define GC_FREE_BUFFER 128
 vm_t* vm_new(bool compiler(bytecode_t *bc, const char* input)) {
@@ -4336,8 +4331,7 @@ vm_t* vm_new(bool compiler(bytecode_t *bc, const char* input)) {
 	var_ref(vm->var_null);
 
 	vm->var_Object = vm_new_class(vm, "Object");
-	vm_reg_static(vm, NULL, "yield()", native_yield, NULL);
-	vm_reg_static(vm, NULL, "debug()", native_debug, NULL);
+	//vm_reg_static(vm, NULL, "debug()", native_debug, NULL);
 	return vm;
 }
 
