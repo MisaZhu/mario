@@ -2026,7 +2026,6 @@ static void var_cache_free(vm_t* vm) {
 	vm->var_cache_used = 0;	
 }
 
-/*
 static int32_t var_cache(vm_t* vm, var_t* v) {
 	if(vm->var_cache_used >= VAR_CACHE_MAX)
 		return -1;
@@ -2046,7 +2045,6 @@ static bool try_cache(vm_t* vm, PC* ins, var_t* v) {
 	*ins = (*ins) | INSTR_OPT_CACHE;
 	return false;
 }
-*/
 
 #endif
 
@@ -3603,23 +3601,39 @@ static inline void handle_const(vm_t* vm, PC ins, opr_code_t instr, uint32_t off
 static inline void handle_int(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
 	register PC* code = vm->bc.code_buf;
 	var_t* v = var_new_int(vm, (int)code[vm->pc++]);
+	#ifdef MARIO_CACHE
+	if(try_cache(vm, &code[vm->pc-2], v))
+		code[vm->pc-1] = INSTR_NIL;
+	#endif
 	vm_push(vm, v);
 }
 
 static inline void handle_int_s(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
+	register PC* code = vm->bc.code_buf;
 	var_t* v = var_new_int(vm, offset);
+	#ifdef MARIO_CACHE
+	try_cache(vm, &code[vm->pc-1], v);
+	#endif
 	vm_push(vm, v);
 }
 
 static inline void handle_float(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
 	register PC* code = vm->bc.code_buf;
 	var_t* v = var_new_float(vm, *(float*)(&code[vm->pc++]));
+	#ifdef MARIO_CACHE
+	if(try_cache(vm, &code[vm->pc-2], v))
+		code[vm->pc-1] = INSTR_NIL;
+	#endif
 	vm_push(vm, v);
 }
 
 static inline void handle_str(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
+	register PC* code = vm->bc.code_buf;
 	const char* s = bc_getstr(&vm->bc, offset);
 	var_t* v = var_new_str(vm, s);
+	#ifdef MARIO_CACHE	
+	try_cache(vm, &code[vm->pc-1], v);
+	#endif
 	vm_push(vm, v);
 }
 
