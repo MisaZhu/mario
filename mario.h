@@ -280,6 +280,7 @@ typedef struct st_bytecode {
 
 #define INSTR_OBJ          0x090 // object for JSON 
 #define INSTR_OBJ_END      0x091 // object end for JSON 
+#define INSTR_NAME_AT      0x092 // NAMEAT     : get obj element name at
 
 #define INSTR_BLOCK        0x0A0 // block 
 #define INSTR_BLOCK_END    0x0A1 // block end 
@@ -379,7 +380,8 @@ typedef struct st_func {
 //script node for var member children
 typedef struct st_node {
 	int16_t magic: 8; //1 for node
-  int16_t be_const : 8;
+	int16_t be_const : 4;
+	int16_t be_inherited : 4;
 	char* name;
 	var_t* var;
 } node_t;

@@ -19,6 +19,7 @@ static const char* inmstr_str(opr_code_t ins) {
 		case  INSTR_FLOAT				: return "FLOAT";
 		case  INSTR_STR					: return "STR";
 		case  INSTR_ARRAY_AT		: return "ARRAT";
+		case  INSTR_NAME_AT		: return "NAMEAT";
 		case  INSTR_ARRAY				: return "ARR";
 		case  INSTR_ARRAY_END		: return "ARRE";
 		case  INSTR_LOAD				: return "LOAD";

@@ -1298,7 +1298,9 @@ node_t* var_get(var_t* var, int32_t index) {
 }
 
 node_t* var_array_get(var_t* var, int32_t index) {
-	var_t* arr_var = var_find_var(var, "_ARRAY_");
+	var_t* arr_var = var;
+	if(var->is_array)
+	arr_var = var_find_var(var, "_ARRAY_");
 	if(arr_var == NULL)
 		return NULL;
 
@@ -2356,6 +2358,7 @@ node_t* vm_find_in_class(var_t* var, const char* name) {
 		ret = var_find(proto, name);
 		if(ret != NULL) {
 			ret = var_add(var, name, var_clone(ret->var));
+			ret->be_inherited = 1;
 			return ret;
 		}
 		proto = var_get_prototype(proto);
@@ -2481,7 +2484,8 @@ inline node_t* vm_load_node(vm_t* vm, const char* name, bool create) {
 void var_set_prototype(var_t* var, var_t* proto) {
 	if(var == NULL || proto == NULL)
 		return;
-	var_add(var, PROTOTYPE, proto);
+	node_t* ret = var_add(var, PROTOTYPE, proto);
+	ret->be_inherited = 1;
 }
 
 void var_from_prototype(var_t* var, var_t* proto) {
@@ -3895,6 +3899,24 @@ static inline void handle_array_at(vm_t* vm, PC ins, opr_code_t instr, uint32_t 
 	var_unref(v2);
 }
 
+static inline void handle_name_at(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
+	var_t* v2 = vm_pop2(vm);
+	var_t* v1 = vm_pop2(vm);
+	node_t* n = NULL;
+	int at = var_get_int(v2);
+	n = var_array_get(v1, at);
+	if(n != NULL) {
+		if(v1->is_array)
+			vm_push(vm, var_new_int(vm, at));
+		else
+			vm_push(vm, var_new_str(vm, n->name));
+	}
+	else
+		vm_push(vm, var_new(vm));
+	var_unref(v1);
+	var_unref(v2);
+}
+
 static inline void handle_class(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
 	register PC* code = vm->bc.code_buf;
 	const char* s = bc_getstr(&vm->bc, offset);
@@ -3991,6 +4013,7 @@ static void init_instr_table(void) {
 	instr_table[INSTR_FLOAT] = handle_float;
 	instr_table[INSTR_STR] = handle_str;
 	instr_table[INSTR_ARRAY_AT] = handle_array_at;
+	instr_table[INSTR_NAME_AT] = handle_name_at;
 	instr_table[INSTR_ARRAY] = handle_obj;
 	instr_table[INSTR_ARRAY_END] = handle_obj_end;
 	instr_table[INSTR_SAFE_VAR] = handle_const;
