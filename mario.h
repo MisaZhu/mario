@@ -381,7 +381,8 @@ typedef struct st_func {
 typedef struct st_node {
 	int16_t magic: 8; //1 for node
 	int16_t be_const : 4;
-	int16_t be_inherited : 4;
+	int16_t be_inherited : 2;
+	int16_t be_unenumerable : 2;
 	char* name;
 	var_t* var;
 } node_t;

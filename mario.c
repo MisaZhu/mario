@@ -3288,8 +3288,9 @@ var_t* vm_new_class(vm_t* vm, const char* cls) {
 		return NULL;
 	var_t* cls_var = n->var;
 	cls_var->type = V_OBJECT;
-	if(var_get_prototype(cls_var) == NULL)
+	if(var_get_prototype(cls_var) == NULL) {
 		var_set_prototype(cls_var, var_new_obj(vm, NULL, NULL));
+	}
 	return cls_var;
 }
 
@@ -4234,6 +4235,7 @@ node_t* vm_reg_var(vm_t* vm, var_t* cls, const char* name, var_t* var, bool be_c
 
 	node_t* node = var_add(cls_var, name, var);
 	node->be_const = be_const;
+	node->be_unenumerable = true;
 	return node;
 }
 
@@ -4274,6 +4276,7 @@ node_t* vm_reg_native(vm_t* vm, var_t* cls, const char* decl, native_func_t nati
 
 	var_t* var = var_new_func(vm, func);
 	node_t* node = var_add(cls_var, name->cstr, var);
+	node->be_unenumerable = true;
 	mstr_free(name);
 
 	return node;
