@@ -3063,6 +3063,7 @@ var_t* new_obj(vm_t* vm, const char* name, int arg_num) {
 	var_t* constructor = NULL;
 
 	if(n->var->is_func) { // new object built by function call
+		var_set_prototype(obj, var_get_prototype(vm->var_Object));
 		constructor = n->var;
 	}
 	else {
