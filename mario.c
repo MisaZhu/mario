@@ -1683,6 +1683,18 @@ static const char* get_typeof(var_t* var) {
 	return "undefined";
 }
 
+var_t* var_get_prototype(var_t* var) {
+	return get_obj(var, PROTOTYPE);
+}
+
+void var_set_prototype(var_t* var, var_t* proto) {
+	if(var == NULL || proto == NULL)
+		return;
+	node_t* ret = var_add(var, PROTOTYPE, proto);
+	ret->be_inherited = 1;
+	ret->be_unenumerable = 1;
+}
+
 inline var_t* var_new(vm_t* vm) {
 	var_t* var = get_from_free(vm);
 	if(var == NULL) {
@@ -1706,7 +1718,9 @@ inline var_t* var_new_array(vm_t* vm) {
 	var_t* var = var_new_obj(vm, NULL, NULL);
 	var->is_array = 1;
 	var_t* members = var_new_obj(vm, NULL, NULL);
-	var_add(var, "_ARRAY_", members);
+	node_t* n = var_add(var, "_ARRAY_", members);
+	n->be_unenumerable = 1;
+	var_set_prototype(var, var_get_prototype(vm->var_Array));
 	return var;
 }
 
@@ -1746,10 +1760,6 @@ inline var_t* var_new_float(vm_t* vm, float i) {
 	var->value = _malloc(sizeof(float));
 	*((float*)var->value) = i;
 	return var;
-}
-
-var_t* var_get_prototype(var_t* var) {
-	return get_obj(var, PROTOTYPE);
 }
 
 inline var_t* var_new_str(vm_t* vm, const char* s) {
@@ -2357,6 +2367,8 @@ node_t* vm_find_in_class(var_t* var, const char* name) {
 		node_t* ret = NULL;
 		ret = var_find(proto, name);
 		if(ret != NULL) {
+			if(ret->var != NULL && ret->var->is_func)
+				return ret;
 			ret = var_add(var, name, var_clone(ret->var));
 			ret->be_inherited = 1;
 			return ret;
@@ -2480,13 +2492,6 @@ inline node_t* vm_load_node(vm_t* vm, const char* name, bool create) {
 	}
 }
 */
-
-void var_set_prototype(var_t* var, var_t* proto) {
-	if(var == NULL || proto == NULL)
-		return;
-	node_t* ret = var_add(var, PROTOTYPE, proto);
-	ret->be_inherited = 1;
-}
 
 void var_from_prototype(var_t* var, var_t* proto) {
 	if(var == NULL || proto == NULL)
@@ -3291,6 +3296,9 @@ var_t* vm_new_class(vm_t* vm, const char* cls) {
 	if(var_get_prototype(cls_var) == NULL) {
 		var_set_prototype(cls_var, var_new_obj(vm, NULL, NULL));
 	}
+
+	if(strcmp(cls, "Object") != 0)
+		do_extends(vm, cls_var, "Object");
 	return cls_var;
 }
 
@@ -3900,24 +3908,6 @@ static inline void handle_array_at(vm_t* vm, PC ins, opr_code_t instr, uint32_t 
 	var_unref(v2);
 }
 
-static inline void handle_name_at(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
-	var_t* v2 = vm_pop2(vm);
-	var_t* v1 = vm_pop2(vm);
-	node_t* n = NULL;
-	int at = var_get_int(v2);
-	n = var_array_get(v1, at);
-	if(n != NULL) {
-		if(v1->is_array)
-			vm_push(vm, var_new_int(vm, at));
-		else
-			vm_push(vm, var_new_str(vm, n->name));
-	}
-	else
-		vm_push(vm, var_new(vm));
-	var_unref(v1);
-	var_unref(v2);
-}
-
 static inline void handle_class(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
 	register PC* code = vm->bc.code_buf;
 	const char* s = bc_getstr(&vm->bc, offset);
@@ -4014,7 +4004,6 @@ static void init_instr_table(void) {
 	instr_table[INSTR_FLOAT] = handle_float;
 	instr_table[INSTR_STR] = handle_str;
 	instr_table[INSTR_ARRAY_AT] = handle_array_at;
-	instr_table[INSTR_NAME_AT] = handle_name_at;
 	instr_table[INSTR_ARRAY] = handle_obj;
 	instr_table[INSTR_ARRAY_END] = handle_obj_end;
 	instr_table[INSTR_SAFE_VAR] = handle_const;
@@ -4452,6 +4441,7 @@ vm_t* vm_new(bool compiler(bytecode_t *bc, const char* input)) {
 	var_ref(vm->var_null);
 
 	vm->var_Object = vm_new_class(vm, "Object");
+	vm->var_Array = vm_new_class(vm, "Array");
 	//vm_reg_static(vm, NULL, "debug()", native_debug, NULL);
 	return vm;
 }

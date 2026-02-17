@@ -280,7 +280,6 @@ typedef struct st_bytecode {
 
 #define INSTR_OBJ          0x090 // object for JSON 
 #define INSTR_OBJ_END      0x091 // object end for JSON 
-#define INSTR_NAME_AT      0x092 // NAMEAT     : get obj element name at
 
 #define INSTR_BLOCK        0x0A0 // block 
 #define INSTR_BLOCK_END    0x0A1 // block end 
