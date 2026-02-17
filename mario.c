@@ -1720,7 +1720,6 @@ inline var_t* var_new_array(vm_t* vm) {
 	var_t* members = var_new_obj(vm, NULL, NULL);
 	node_t* n = var_add(var, "_ARRAY_", members);
 	n->be_unenumerable = 1;
-	var_set_prototype(var, var_get_prototype(vm->var_Array));
 	return var;
 }
 
@@ -2542,6 +2541,9 @@ static inline var_t* var_build_basic_prototype(vm_t* vm, var_t* var) {
 	else if(var->type == V_INT || var->type == V_FLOAT) {
 		cls_var  = vm->var_Number;
 	}
+	else {
+		cls_var  = vm->var_Object;
+	}
 
 	if(cls_var != NULL) {
 		protoV = var_get_prototype(cls_var); //set prototype of var
@@ -2577,7 +2579,9 @@ static var_t* var_new_func(vm_t* vm, func_t* func) {
 	var->free_func = func_free;
 	var->value = func;
 
-	var_t* proto = var_new_obj(vm, NULL, NULL);
+	var_t* proto = vm->var_Object;
+	if(proto == NULL)
+		proto = var_new_obj(vm, NULL, NULL);
 	var_set_prototype(var, proto);
 	//var_add(proto, CONSTRUCTOR, var);
 	return var;
@@ -3063,7 +3067,6 @@ var_t* new_obj(vm_t* vm, const char* name, int arg_num) {
 	var_t* constructor = NULL;
 
 	if(n->var->is_func) { // new object built by function call
-		var_set_prototype(obj, var_get_prototype(vm->var_Object));
 		constructor = n->var;
 	}
 	else {
@@ -4441,8 +4444,6 @@ vm_t* vm_new(bool compiler(bytecode_t *bc, const char* input)) {
 	//var_add(vm->root, "", vm->var_null);
 	var_ref(vm->var_null);
 
-	vm->var_Object = vm_new_class(vm, "Object");
-	vm->var_Array = vm_new_class(vm, "Array");
 	//vm_reg_static(vm, NULL, "debug()", native_debug, NULL);
 	return vm;
 }
