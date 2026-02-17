@@ -194,10 +194,9 @@ typedef struct st_bytecode {
 #define INSTR_VAR          0x001 // VAR x         : declare var x
 #define INSTR_CONST        0x002 // CONST x       : declare const x
 #define INSTR_LOAD         0x003 // LOAD x        : load and push x 
-#define INSTR_LOADO        0x004 // LOAD obj x    : load and push obj x 
+#define INSTR_ASIGN        0x004 // ASIGN         : =
 #define INSTR_STORE        0x005 // STORE x       : pop and store to x
 #define INSTR_GET          0x006 // getfield
-#define INSTR_ASIGN        0x007 // ASIGN         : =
 
 #define INSTR_INT					 0x008 // INT int       : push int
 #define INSTR_FLOAT        0x009 // FLOAT float   : push float 
@@ -497,7 +496,6 @@ void var_array_del(var_t* var, int32_t index);
 void var_array_reverse(var_t* var);
 uint32_t var_array_size(var_t* var);
 void var_instance_from(var_t* var, var_t* src);
-void var_from_prototype(var_t* var, var_t* proto);
 void var_clean(var_t* var);
 
 var_t* var_ref(var_t* var);
@@ -525,6 +523,7 @@ float var_get_float(var_t* var);
 var_t* var_set_float(var_t* var, float v);
 func_t* var_get_func(var_t* var);
 var_t* var_get_prototype(var_t* var);
+void var_set_prototype(var_t* var, var_t* proto);
 bool var_instanceof(var_t* var, var_t* proto);
 
 void var_to_json_str(var_t*, mstr_t*, int);

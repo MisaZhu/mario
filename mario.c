@@ -1730,6 +1730,7 @@ inline var_t* var_new_int(vm_t* vm, int i) {
 	var->type = V_INT;
 	var->value = _malloc(sizeof(int));
 	*((int*)var->value) = i;
+	var_set_prototype(var, vm->var_Number);
 	return var;
 }
 
@@ -1760,6 +1761,7 @@ inline var_t* var_new_float(vm_t* vm, float i) {
 	var->type = V_FLOAT;
 	var->value = _malloc(sizeof(float));
 	*((float*)var->value) = i;
+	var_set_prototype(var, vm->var_Number);
 	return var;
 }
 
@@ -1769,6 +1771,7 @@ inline var_t* var_new_str(vm_t* vm, const char* s) {
 	var->size = (uint32_t)strlen(s);
 	var->value = _malloc(var->size + 1);
 	memcpy(var->value, s, var->size + 1);
+	var_set_prototype(var, vm->var_String);
 	return var;
 }
 
@@ -1781,6 +1784,7 @@ inline var_t* var_new_str2(vm_t* vm, const char* s, uint32_t len) {
 	var->value = _malloc(var->size + 1);
 	memcpy(var->value, s, var->size + 1);
 	((char*)(var->value))[var->size] = 0;
+	var_set_prototype(var, vm->var_String);
 	return var;
 }
 
@@ -2494,13 +2498,6 @@ inline node_t* vm_load_node(vm_t* vm, const char* name, bool create) {
 }
 */
 
-void var_from_prototype(var_t* var, var_t* proto) {
-	if(var == NULL || proto == NULL)
-		return;
-	var_set_prototype(var, proto);
-//	var_clone_members(var, proto);
-}
-
 void var_instance_from(var_t* var, var_t* src) {
 	if(var == NULL || src == NULL)
 		return;
@@ -2508,7 +2505,7 @@ void var_instance_from(var_t* var, var_t* src) {
 	var_t* proto = var_get_prototype(src);
 	if(proto == NULL)
 		proto = src;
-	var_from_prototype(var, proto);
+	var_set_prototype(var, proto);
 }
 
 static void var_set_father(var_t* var, var_t* father) {
@@ -2526,32 +2523,6 @@ static void var_set_father(var_t* var, var_t* father) {
 		return;
 
 	var_set_prototype(proto, super_proto);
-}
-
-static inline var_t* var_build_basic_prototype(vm_t* vm, var_t* var) {
-	var_t* protoV = var_get_prototype(var);
-	if(protoV != NULL)
-		return var;
-
-	var_t* cls_var = NULL;
-	if(var->type == V_STRING) { //get basic native class
-		cls_var  = vm->var_String;
-	}
-	else if(var->is_array) {
-		cls_var  = vm->var_Array;
-	}
-	else if(var->type == V_INT || var->type == V_FLOAT) {
-		cls_var  = vm->var_Number;
-	}
-	else {
-		cls_var  = vm->var_Object;
-	}
-
-	if(cls_var != NULL) {
-		protoV = var_get_prototype(cls_var); //set prototype of var
-		var_set_prototype(var, protoV);
-	}
-	return var;
 }
 
 //for function.
@@ -3381,18 +3352,8 @@ static inline void handle_load(vm_t* vm, PC ins, opr_code_t instr, uint32_t offs
 	}
 	if(!loaded) {
 		const char* s = bc_getstr(&vm->bc, offset);
-		node_t* n = NULL;
-		if(instr == INSTR_LOAD) {
-			n = vm_load_node(vm, s, true);
-			vm_push_node(vm, n);
-		}
-		else {
-			n = vm_load_node(vm, s, true);
-			vm_push_node(vm, n);
-			if(n->var->type != V_OBJECT) {
-				mario_debug("[debug] Warning: object or class '%s' undefined, object created.\n", s);
-			}
-		}
+		node_t* n = vm_load_node(vm, s, true);
+		vm_push_node(vm, n);
 	}
 }
 
@@ -3778,7 +3739,6 @@ static inline void handle_asign(vm_t* vm, PC ins, opr_code_t instr, uint32_t off
 static inline void handle_get(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
 	const char* s = bc_getstr(&vm->bc, offset);
 	var_t* v = vm_pop2(vm);
-	var_build_basic_prototype(vm, v);
 	do_get(vm, v, s);
 	var_unref(v);
 }
@@ -3800,7 +3760,6 @@ static inline void handle_call(vm_t* vm, PC ins, opr_code_t instr, uint32_t offs
 
 	if(instr == INSTR_CALLO) {
 		obj = vm_stack_pick(vm, arg_num+1);
-		var_build_basic_prototype(vm, obj);
 		unrefObj = true;
 	}
 	else {
@@ -4001,7 +3960,6 @@ static void init_instr_table(void) {
 	instr_table[INSTR_VAR] = handle_var;
 	instr_table[INSTR_CONST] = handle_const;
 	instr_table[INSTR_LOAD] = handle_load;
-	instr_table[INSTR_LOADO] = handle_load;
 	instr_table[INSTR_GET] = handle_get;
 	instr_table[INSTR_ASIGN] = handle_asign;
 
