@@ -1691,6 +1691,7 @@ void var_set_prototype(var_t* var, var_t* proto) {
 	if(var == NULL || proto == NULL)
 		return;
 	node_t* ret = var_add(var, PROTOTYPE, proto);
+	ret->invisable = 1;
 	ret->be_inherited = 1;
 	ret->be_unenumerable = 1;
 }
@@ -1720,6 +1721,7 @@ inline var_t* var_new_array(vm_t* vm) {
 	var_t* members = var_new_obj(vm, NULL, NULL);
 	node_t* n = var_add(var, "_ARRAY_", members);
 	n->be_unenumerable = 1;
+	n->invisable = 1;
 	return var;
 }
 
@@ -2001,7 +2003,7 @@ void var_to_json_str(var_t* var, mstr_t* ret, int level) {
 		bool had = false;
 		for(i=0; i<sz; ++i) {
 			node_t* n = var_get(var, i);
-			if(strcmp(n->name, "prototype") == 0)
+			if(n->invisable)
 				continue;
 			if(had)
 				mstr_append(ret, ",\n");
