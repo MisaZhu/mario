@@ -960,7 +960,7 @@ static var_t* json_parse_factor(vm_t* vm, lex_t *l) {
 	}
 	else if (l->tk=='{') {
 		lex_js_chkread(l, '{');
-		var_t* obj = var_new_obj(vm, NULL, NULL);
+		var_t* obj = var_new_obj_no_proto(vm, NULL, NULL);
 		while(l->tk != '}') {
 			mstr_t* id = mstr_new(l->tk_str->cstr);
 			if(l->tk == LEX_STR)
@@ -1711,14 +1711,14 @@ inline var_t* var_new(vm_t* vm) {
 }
 
 inline var_t* var_new_block(vm_t* vm) {
-	var_t* var = var_new_obj(vm, NULL, NULL);
+	var_t* var = var_new_obj_no_proto(vm, NULL, NULL);
 	return var;
 }
 
 inline var_t* var_new_array(vm_t* vm) {
-	var_t* var = var_new_obj(vm, NULL, NULL);
+	var_t* var = var_new_obj_no_proto(vm, NULL, NULL);
 	var->is_array = 1;
-	var_t* members = var_new_obj(vm, NULL, NULL);
+	var_t* members = var_new_obj_no_proto(vm, NULL, NULL);
 	node_t* n = var_add(var, "_ARRAY_", members);
 	n->be_unenumerable = 1;
 	n->invisable = 1;
@@ -1749,7 +1749,7 @@ inline var_t* var_new_bool(vm_t* vm, bool b) {
 	return var;
 }
 
-inline var_t* var_new_obj(vm_t* vm, void*p, free_func_t fr) {
+inline var_t* var_new_obj_no_proto(vm_t* vm, void*p, free_func_t fr) {
 	var_t* var = var_new(vm);
 	var->type = V_OBJECT;
 	var->value = p;
@@ -2548,14 +2548,14 @@ static void func_free(void* p) {
 }
 
 static var_t* var_new_func(vm_t* vm, func_t* func) {
-	var_t* var = var_new_obj(vm, NULL, NULL);
+	var_t* var = var_new_obj_no_proto(vm, NULL, NULL);
 	var->is_func = 1;
 	var->free_func = func_free;
 	var->value = func;
 
 	var_t* proto = vm->var_Object;
 	if(proto == NULL)
-		proto = var_new_obj(vm, NULL, NULL);
+		proto = var_new_obj_no_proto(vm, NULL, NULL);
 	var_set_prototype(var, proto);
 	//var_add(proto, CONSTRUCTOR, var);
 	return var;
@@ -2604,7 +2604,7 @@ static void func_mark_closure(vm_t* vm, var_t* func) { //try mark function closu
 }
 
 static bool func_call(vm_t* vm, var_t* obj, var_t* func_var, int arg_num) {
-	var_t *env = var_new_obj(vm, NULL, NULL);
+	var_t *env = var_new_obj_no_proto(vm, NULL, NULL);
 	var_t* args = var_new_array(vm);
 	var_add(env, "arguments", args);
 	func_t* func = var_get_func(func_var);
@@ -3035,7 +3035,7 @@ var_t* new_obj(vm_t* vm, const char* name, int arg_num) {
 		return NULL;
 	}
 
-	obj = var_new_obj(vm, NULL, NULL);
+	obj = var_new_obj_no_proto(vm, NULL, NULL);
 	var_instance_from(obj, n->var);
 	var_t* protoV = var_get_prototype(obj);
 	var_t* constructor = NULL;
@@ -3272,7 +3272,7 @@ var_t* vm_new_class(vm_t* vm, const char* cls) {
 	var_t* cls_var = n->var;
 	cls_var->type = V_OBJECT;
 	if(var_get_prototype(cls_var) == NULL) {
-		var_set_prototype(cls_var, var_new_obj(vm, NULL, NULL));
+		var_set_prototype(cls_var, var_new_obj_no_proto(vm, NULL, NULL));
 	}
 
 	if(strcmp(cls, "Object") != 0)
@@ -3839,7 +3839,7 @@ static inline void handle_func(vm_t* vm, PC ins, opr_code_t instr, uint32_t offs
 static inline void handle_obj(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
 	var_t* obj;
 	if(instr == INSTR_OBJ) {
-		obj = var_new_obj(vm, NULL, NULL);
+		obj = var_new_obj_no_proto(vm, NULL, NULL);
 		var_set_prototype(obj, var_get_prototype(vm->var_Object));
 	}
 	else
@@ -4393,7 +4393,7 @@ vm_t* vm_new(bool compiler(bytecode_t *bc, const char* input)) {
 	array_init(&vm->close_natives);	
 	array_init(&vm->init_natives);	
 	
-	vm->root = var_new_obj(vm, NULL, NULL);
+	vm->root = var_new_obj_no_proto(vm, NULL, NULL);
 	var_ref(vm->root);
 	vm->var_true = var_new_bool(vm, true);
 	//var_add(vm->root, "", vm->var_true);

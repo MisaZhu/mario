@@ -510,7 +510,7 @@ var_t* var_new_array(vm_t* vm);
 var_t* var_new_int(vm_t* vm, int i);
 var_t* var_new_null(vm_t* vm);
 var_t* var_new_bool(vm_t* vm, bool b);
-var_t* var_new_obj(vm_t* vm, void*p, free_func_t fr);
+var_t* var_new_obj_no_proto(vm_t* vm, void*p, free_func_t fr);
 var_t* var_new_float(vm_t* vm, float i);
 var_t* var_new_str(vm_t* vm, const char* s);
 var_t* var_new_str2(vm_t* vm, const char* s, uint32_t len);
