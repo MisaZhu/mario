@@ -2302,7 +2302,8 @@ typedef struct st_scope {
 	uint32_t is_func: 8;
 	uint32_t is_block: 8;
 	uint32_t is_try: 8;
-	uint32_t is_loop: 8;
+	uint32_t is_loop: 4;
+	uint32_t is_strict: 4;
 	//continue and break anchor for loop(while/for)
 } scope_t;
 
@@ -2410,28 +2411,6 @@ node_t* vm_find_in_class(var_t* var, const char* name) {
 	return NULL;
 }
 
-void vm_throw(vm_t* vm, const char* message) {
-	var_t* err = var_new_obj(vm, vm->var_Error, NULL, NULL);
-	var_t* msg = var_find_member_var(err, "message");
-	if(msg != NULL)
-		var_set_str(msg, message);
-	vm_push(vm, err);
-	while(true) {
-		scope_t* sc = vm_get_scope(vm);
-		if(sc == NULL) {
-			mario_error("Error: 'throw' not in any try...catch!\n");
-			vm_terminate(vm);
-			break;
-		}
-
-		if(sc->is_try) {
-			vm->pc = sc->pc;
-			break;
-		}
-		vm_pop_scope(vm);
-	}
-}
-
 bool var_instanceof(var_t* var, var_t* proto) {
 	var_t* v = var_get_prototype(proto);
 	if(v != NULL)
@@ -2500,6 +2479,60 @@ static inline node_t* vm_find_in_scopes(vm_t* vm, const char* name) {
 	return var_find_own_member(vm->root, name);
 }
 
+static inline scope_t* vm_get_try_catch_scope(vm_t* vm) {
+	scope_t* sc = vm_get_scope(vm);
+	while(sc != NULL) {
+		if(sc->is_try)
+			return sc;
+		sc = sc->prev;
+	}
+	return NULL;
+}
+
+static inline scope_t* vm_get_strict_scope(vm_t* vm) {
+	scope_t* sc = vm_get_scope(vm);
+	while(sc != NULL) {
+		if(sc->is_strict)
+			return sc;
+		sc = sc->prev;
+	}
+	return NULL;
+}
+
+void vm_throw(vm_t* vm, const char *format, ...) {
+	scope_t* try_sc = vm_get_try_catch_scope(vm);
+	if(try_sc == NULL) {
+		return;
+	}
+
+	char message[BUF_SIZE+1] = {0};
+	va_list ap;
+	va_start(ap, format);
+	vsnprintf(message, BUF_SIZE, format, ap);
+	va_end(ap);
+
+	var_t* err = var_new_obj(vm, vm->var_Error, NULL, NULL);
+	var_t* msg = var_find_member_var(err, "message");
+	if(msg != NULL)
+		var_set_str(msg, message);
+	vm_push(vm, err);
+	while(true) {
+		scope_t* sc = vm_get_scope(vm);
+		if(sc == NULL) {
+			mario_error("Error: 'throw' not in any try...catch!\n");
+			vm_terminate(vm);
+			break;
+		}
+
+		if(sc == try_sc) {
+			vm->pc = sc->pc;
+			break;
+		}
+		vm_pop_scope(vm);
+	}
+}
+
+
 static inline var_t* vm_this_in_scopes(vm_t* vm) {
 	node_t* n = vm_find_in_scopes(vm, THIS);
 	if(n == NULL)
@@ -2521,7 +2554,7 @@ inline node_t* vm_load_node(vm_t* vm, const char* name, bool create) {
 
 	if(!create) {
 		mario_error("Error: '%s' undefined!\n", name);	
-		vm_throw(vm, "Error: undefined!");
+		vm_throw(vm, "Error: '%s' undefined!", name);	
 		return NULL;
 	}
 
@@ -3081,7 +3114,7 @@ var_t* new_obj(vm_t* vm, const char* name, int arg_num) {
 
 	if(n == NULL || n->var->type != V_OBJECT) {
 		mario_error("Error: There is no class: '%s'!\n", name);
-		vm_throw(vm, "Error: undefined class!");
+		vm_throw(vm, "Error: There is no class: '%s'!", name);
 		return NULL;
 	}
 
@@ -3402,7 +3435,15 @@ static inline void handle_load(vm_t* vm, PC ins, opr_code_t instr, uint32_t offs
 	}
 	if(!loaded) {
 		const char* s = bc_getstr(&vm->bc, offset);
-		node_t* n = vm_load_node(vm, s, true);
+		node_t* n = NULL;
+		scope_t* sc = vm_get_strict_scope(vm);
+		if(sc == NULL)
+			n = vm_load_node(vm, s, true);
+		else 
+			n = vm_load_node(vm, s, false);
+
+		if(n == NULL)
+			n = node_new(vm, s, NULL);
 		vm_push_node(vm, n);
 	}
 }
@@ -3697,7 +3738,7 @@ static inline void handle_const(vm_t* vm, PC ins, opr_code_t instr, uint32_t off
 	node_t *node = var_find_own_member(v, s);
 	if(node != NULL) {
 		mario_error("Error: let '%s' has already existed!\n", s);
-		vm_throw(vm, "Error: let has already existed!");
+		vm_throw(vm, "Error: let '%s' has already existed!", s);
 	}
 	else {
 		node = var_add(v, s, NULL);
@@ -3769,7 +3810,7 @@ static inline void handle_asign(vm_t* vm, PC ins, opr_code_t instr, uint32_t off
 	}
 	else {
 		mario_error("Error: Can not change a const variable: '%s'!\n", n->name);
-		vm_throw(vm, "Error: Can not change a const variable!");
+		vm_throw(vm, "Error: Can not change a const variable: '%s'!", n->name);
 	}
 
 	if((ins & INSTR_OPT_CACHE) == 0) {
@@ -3845,7 +3886,7 @@ static inline void handle_call(vm_t* vm, PC ins, opr_code_t instr, uint32_t offs
 		}
 		vm_push(vm, var_new(vm));
 		mario_error("Error: can not find function '%s'!\n", name->cstr);
-		vm_throw(vm, "Error: can not find function!");
+		vm_throw(vm, "Error: can not find function '%s'!", name->cstr);
 	}
 	mstr_free(name);
 
@@ -3967,6 +4008,20 @@ static inline void handle_include(vm_t* vm, PC ins, opr_code_t instr, uint32_t o
 	var_t* v = vm_pop2(vm);
 	do_include(vm, var_get_str(v));
 	var_unref(v);
+}
+
+static inline void handle_strict_mode(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
+	// Set strict mode for current scope
+	scope_t* sc = vm_get_scope(vm);
+	if(sc != NULL) {
+		sc->is_strict = true;
+	}
+	else {
+		// If no current scope, create one with strict mode enabled
+		scope_t* new_sc = scope_new(NULL);
+		new_sc->is_strict = true;
+		vm_push_scope(vm, new_sc);
+	}
 }
 
 static inline void handle_throw(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
