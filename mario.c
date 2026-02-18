@@ -3433,17 +3433,17 @@ static inline void handle_load(vm_t* vm, PC ins, opr_code_t instr, uint32_t offs
 	}
 	if(!loaded) {
 		const char* s = bc_getstr(&vm->bc, offset);
-		node_t* n = NULL;
-		scope_t* sc = vm_get_strict_scope(vm);
-		if(sc == NULL)
-			n = vm_load_node(vm, s, true);
-		else 
-			n = vm_load_node(vm, s, false);
-
-		if(n == NULL)
-			vm_throw(vm, "'%s' undefined!", s);	
-		else 
-			vm_push_node(vm, n);
+		node_t* n = vm_load_node(vm, s, false);
+		if(n == NULL) {
+			scope_t* sc = vm_get_strict_scope(vm); //check strict mode
+			if(sc != NULL) {
+				vm_throw(vm, "'%s' undefined!", s);	
+				return;
+			}
+			var_t* var = vm_get_scope_var(vm);
+			n = var_add(var, s, NULL);
+		}
+		vm_push_node(vm, n);
 	}
 }
 
