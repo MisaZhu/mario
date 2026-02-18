@@ -1713,7 +1713,7 @@ void var_set_prototype(var_t* var, var_t* proto) {
 		return;
 	node_t* ret = var_add(var, PROTOTYPE, proto);
 	ret->invisable = 1;
-	ret->be_inherited = 1;
+	//ret->be_inherited = 1;
 	ret->be_unenumerable = 1;
 }
 
