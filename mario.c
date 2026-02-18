@@ -1722,6 +1722,7 @@ inline var_t* var_new_array(vm_t* vm) {
 	node_t* n = var_add(var, "_ARRAY_", members);
 	n->be_unenumerable = 1;
 	n->invisable = 1;
+	var_set_prototype(var, vm->var_Array);
 	return var;
 }
 
@@ -3859,7 +3860,7 @@ static inline void handle_array_at(vm_t* vm, PC ins, opr_code_t instr, uint32_t 
 	node_t* n = NULL;
 	if(v2->type == V_STRING) {
 		const char* s = var_get_str(v2);
-		n = var_find(v1, s);
+		n = var_find_create(v1, s);
 	}
 	else {
 		int at = var_get_int(v2);
