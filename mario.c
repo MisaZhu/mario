@@ -2550,7 +2550,7 @@ inline node_t* vm_load_node(vm_t* vm, const char* name, bool create) {
 		return n;
 
 	if(!create) {
-		mario_error("Error: '%s' undefined!\n", name);	
+		mario_debug("Error: '%s' undefined!\n", name);	
 		return NULL;
 	}
 
@@ -3111,8 +3111,8 @@ var_t* new_obj(vm_t* vm, const char* name, int arg_num) {
 	node_t* n = vm_load_node(vm, name, false); //load class;
 
 	if(n == NULL || n->var->type != V_OBJECT) {
-		mario_error("Error: There is no class: '%s'!\n", name);
-		vm_throw(vm, "Error: There is no class: '%s'!", name);
+		mario_debug("Error: There is no class: '%s'!\n", name);
+		vm_throw(vm, "there is no class: '%s'!", name);
 		return NULL;
 	}
 
@@ -3441,7 +3441,7 @@ static inline void handle_load(vm_t* vm, PC ins, opr_code_t instr, uint32_t offs
 			n = vm_load_node(vm, s, false);
 
 		if(n == NULL)
-			vm_throw(vm, "Error: '%s' undefined!", s);	
+			vm_throw(vm, "'%s' undefined!", s);	
 		else 
 			vm_push_node(vm, n);
 	}
@@ -3743,8 +3743,8 @@ static inline void handle_const(vm_t* vm, PC ins, opr_code_t instr, uint32_t off
 	var_t* v = vm_get_scope_var(vm);
 	node_t *node = var_find_own_member(v, s);
 	if(node != NULL) {
-		mario_error("Error: let '%s' has already existed!\n", s);
-		vm_throw(vm, "Error: let '%s' has already existed!", s);
+		mario_debug("Error: let '%s' has already existed!\n", s);
+		vm_throw(vm, "let '%s' has already existed!", s);
 	}
 	else {
 		node = var_add(v, s, NULL);
@@ -3815,8 +3815,8 @@ static inline void handle_asign(vm_t* vm, PC ins, opr_code_t instr, uint32_t off
 		}
 	}
 	else {
-		mario_error("Error: Can not change a const variable: '%s'!\n", n->name);
-		vm_throw(vm, "Error: Can not change a const variable: '%s'!", n->name);
+		mario_debug("Error: Can not change a const variable: '%s'!\n", n->name);
+		vm_throw(vm, "can not change a const variable: '%s'!", n->name);
 	}
 
 	if((ins & INSTR_OPT_CACHE) == 0) {
@@ -3891,8 +3891,8 @@ static inline void handle_call(vm_t* vm, PC ins, opr_code_t instr, uint32_t offs
 			arg_num--;
 		}
 		vm_push(vm, var_new(vm));
-		mario_error("Error: can not find function '%s'!\n", name->cstr);
-		vm_throw(vm, "Error: can not find function '%s'!", name->cstr);
+		mario_debug("Error: can not find function '%s'!\n", name->cstr);
+		vm_throw(vm, "can not find function '%s'!", name->cstr);
 	}
 	mstr_free(name);
 
