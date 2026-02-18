@@ -2308,6 +2308,7 @@ typedef struct st_scope {
 } scope_t;
 
 #define vm_get_scope(vm) (scope_t*)array_tail((vm)->scopes)
+
 static inline var_t* vm_get_scope_var(vm_t* vm) {
 	var_t* ret = vm->root;
 	scope_t* sc = (scope_t*)array_tail(vm->scopes);
@@ -2315,7 +2316,6 @@ static inline var_t* vm_get_scope_var(vm_t* vm) {
 		ret = sc->var;
 	return ret;
 }
-
 
 static scope_t* scope_new(var_t* var) {
 	scope_t* sc = (scope_t*)_malloc(sizeof(scope_t));
@@ -2500,11 +2500,6 @@ static inline scope_t* vm_get_strict_scope(vm_t* vm) {
 }
 
 void vm_throw(vm_t* vm, const char *format, ...) {
-	scope_t* try_sc = vm_get_try_catch_scope(vm);
-	if(try_sc == NULL) {
-		return;
-	}
-
 	char message[BUF_SIZE+1] = {0};
 	va_list ap;
 	va_start(ap, format);
@@ -2516,15 +2511,17 @@ void vm_throw(vm_t* vm, const char *format, ...) {
 	if(msg != NULL)
 		var_set_str(msg, message);
 	vm_push(vm, err);
+
+	scope_t* try_sc = vm_get_try_catch_scope(vm);
+	if(try_sc == NULL)
+		return;
+
 	while(true) {
 		scope_t* sc = vm_get_scope(vm);
-		if(sc == NULL) {
-			mario_error("Error: 'throw' not in any try...catch!\n");
-			vm_terminate(vm);
+		if(sc == NULL)
 			break;
-		}
 
-		if(sc == try_sc) {
+		if(sc->is_try) {
 			vm->pc = sc->pc;
 			break;
 		}
@@ -2554,7 +2551,6 @@ inline node_t* vm_load_node(vm_t* vm, const char* name, bool create) {
 
 	if(!create) {
 		mario_error("Error: '%s' undefined!\n", name);	
-		vm_throw(vm, "Error: '%s' undefined!", name);	
 		return NULL;
 	}
 
@@ -2752,10 +2748,12 @@ static bool func_call(vm_t* vm, var_t* obj, var_t* func_var, int arg_num) {
 			ret->refs--;
 		}
 	}
+	if(ret == NULL)
+		ret = var_new(vm);
 	var_ref(ret);
 	vm_pop(vm);
-	ret->refs--;
 	vm_push(vm, ret);
+	ret->refs--;
 	return true;
 }
 
@@ -3443,8 +3441,9 @@ static inline void handle_load(vm_t* vm, PC ins, opr_code_t instr, uint32_t offs
 			n = vm_load_node(vm, s, false);
 
 		if(n == NULL)
-			n = node_new(vm, s, NULL);
-		vm_push_node(vm, n);
+			vm_throw(vm, "Error: '%s' undefined!", s);	
+		else 
+			vm_push_node(vm, n);
 	}
 }
 
@@ -3458,6 +3457,13 @@ static inline void handle_compare(vm_t* vm, PC ins, opr_code_t instr, uint32_t o
 
 static inline void handle_nil(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
 	/* Do nothing */
+}
+
+static inline void handle_strict(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
+	scope_t* sc = vm_get_scope(vm);
+	if(sc != NULL) {
+		sc->is_strict = true;
+	}
 }
 
 static inline void handle_block(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
@@ -4063,6 +4069,7 @@ static void init_instr_table(void) {
 
 	/* Register instruction handlers */
 	instr_table[INSTR_NIL] = handle_nil;
+	instr_table[INSTR_STRICT] = handle_strict;
 	instr_table[INSTR_VAR] = handle_var;
 	instr_table[INSTR_CONST] = handle_const;
 	instr_table[INSTR_LOAD] = handle_load;
@@ -4179,8 +4186,10 @@ bool vm_run(vm_t* vm) {
 		register opr_code_t instr = OP(ins);
 		register uint32_t offset = OFF(ins);
 
-		if(instr == INSTR_END)
+		if(instr == INSTR_END) {
+			vm->terminated = true;
 			break;
+		}
 
 		/* Table-based instruction dispatch */
 		instr_table[instr](vm, ins, instr, offset);
@@ -4256,10 +4265,10 @@ void vm_close(vm_t* vm) {
 	var_cache_free(vm);
 	#endif
 
+	vm_pop_scope(vm);
 	array_free(vm->scopes, scope_free);
 	vm->scopes = NULL;
 	array_clean(&vm->init_natives, NULL);
-
 	array_clean(&vm->included, (free_func_t)mstr_free);	
 
 	var_unref(vm->root);
@@ -4433,7 +4442,7 @@ vm_t* vm_from(vm_t* vm) {
 	vm_t* ret = vm_new(vm->compiler);
 	ret->gc_buffer_size = vm->gc_buffer_size;
 	ret->gc_free_buffer_size = vm->gc_free_buffer_size;
-  vm_init(ret, vm->on_init, vm->on_close);
+  	vm_init(ret, vm->on_init, vm->on_close);
 	return ret;
 }
 
@@ -4499,6 +4508,8 @@ vm_t* vm_new(bool compiler(bytecode_t *bc, const char* input)) {
 	array_init(&vm->init_natives);	
 	
 	vm->root = var_new_obj_no_proto(vm, NULL, NULL);
+	vm_push_scope(vm, scope_new(vm->root));
+
 	var_ref(vm->root);
 	vm->var_true = var_new_bool(vm, true);
 	//var_add(vm->root, "", vm->var_true);

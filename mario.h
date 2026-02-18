@@ -292,6 +292,7 @@ typedef struct st_bytecode {
 #define INSTR_INSTOF       0x0B2 // instanceof
 
 #define INSTR_INCLUDE      0x0C0 // include
+#define INSTR_STRICT       0x0C1 // strict 
 
 #define INSTR_END          0x0CF //END : end of code.
 
