@@ -455,6 +455,7 @@ typedef struct st_vm {
 	var_t* var_Object;
 	var_t* var_String;
 	var_t* var_Number;
+	var_t* var_Error;
 	var_t* var_Array;
 	var_t* var_true;
 	var_t* var_false;
@@ -481,9 +482,9 @@ var_t* node_replace(node_t* node, var_t* v);
 void var_remove_all(var_t* var);
 node_t* var_add(var_t* var, const char* name, var_t* add);
 node_t* var_add_head(var_t* var, const char* name, var_t* add);
-node_t* var_find(var_t* var, const char*name);
-var_t* var_find_var(var_t* var, const char*name);
-node_t* var_find_create(var_t* var, const char*name);
+node_t* var_find_own_member(var_t* var, const char*name);
+var_t* var_find_own_member_var(var_t* var, const char*name);
+node_t* var_find_own_member_create(var_t* var, const char*name);
 node_t* var_get(var_t* var, int32_t index);
 
 node_t* var_array_get(var_t* var, int32_t index);
@@ -511,6 +512,7 @@ var_t* var_new_int(vm_t* vm, int i);
 var_t* var_new_null(vm_t* vm);
 var_t* var_new_bool(vm_t* vm, bool b);
 var_t* var_new_obj_no_proto(vm_t* vm, void*p, free_func_t fr);
+var_t* var_new_obj(vm_t* vm, var_t* proto, void*p, free_func_t fr);
 var_t* var_new_float(vm_t* vm, float i);
 var_t* var_new_str(vm_t* vm, const char* s);
 var_t* var_new_str2(vm_t* vm, const char* s, uint32_t len);
@@ -525,6 +527,9 @@ func_t* var_get_func(var_t* var);
 var_t* var_get_prototype(var_t* var);
 void var_set_prototype(var_t* var, var_t* proto);
 bool var_instanceof(var_t* var, var_t* proto);
+node_t* var_find_member(var_t* obj, const char* name);
+var_t* var_find_member_var(var_t* obj, const char* name);
+var_t* var_find_own_member_var(var_t* obj, const char* name);
 
 void var_to_json_str(var_t*, mstr_t*, int);
 void var_to_str(var_t*, mstr_t*);
@@ -546,9 +551,11 @@ bool vm_load_run(vm_t* vm, const char* s);
 bool vm_load_run_native(vm_t* vm, const char* s);
 bool vm_run(vm_t* vm);
 void vm_close(vm_t* vm);
+void vm_terminate(vm_t* vm);
 
 var_t* vm_new_class(vm_t* vm, const char* cls);
 var_t* new_obj(vm_t* vm, const char* cls_name, int arg_num);
+void    vm_throw(vm_t* vm, const char* message);
 node_t* vm_find(vm_t* vm, const char* name);
 node_t* vm_find_in_class(var_t* var, const char* name);
 node_t* vm_reg_var(vm_t* vm, var_t* cls, const char* name, var_t* var, bool be_const);
@@ -558,7 +565,6 @@ void vm_mark_func_scopes(vm_t* vm, var_t* func);
 void vm_reg_init(vm_t* vm, void (*func)(void*), void* data);
 void vm_reg_close(vm_t* vm, void (*func)(void*), void* data);
 
-node_t* find_member(var_t* obj, const char* name);
 var_t* get_obj(var_t* obj, const char* name);
 void* get_raw(var_t* obj, const char* name);
 const char* get_str(var_t* obj, const char* name);

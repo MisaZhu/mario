@@ -1176,6 +1176,9 @@ node_t* node_new(vm_t* vm, const char* name, var_t* var) {
 		node->var = var_ref(var);
 	else
 		node->var = var_ref(var_new(vm));
+
+	if(strcmp(name, CONSTRUCTOR) == 0)
+		node->be_unenumerable = true;
 	return node;
 }
 
@@ -1257,14 +1260,14 @@ node_t* var_add_head(var_t* var, const char* name, var_t* add) {
 	return var_add(var, name, add);
 }
 
-inline node_t* var_find(var_t* var, const char*name) {
+inline node_t* var_find_own_member(var_t* var, const char*name) {
 	node_t* node = var_find_raw(var, name);
 	if(node_empty(node))
 		return NULL;
 	return node;
 }
 
-inline var_t* var_find_var(var_t* var, const char*name) {
+inline var_t* var_find_own_member_var(var_t* var, const char*name) {
 	// Try to find in inline cache first
 	node_t* node = ic_cache_lookup(var->vm, var, name);
 	if(node != NULL) {
@@ -1273,7 +1276,7 @@ inline var_t* var_find_var(var_t* var, const char*name) {
 	}
 	
 	// Cache miss, perform normal lookup
-	node = var_find(var, name);
+	node = var_find_own_member(var, name);
 	if(node != NULL) {
 		// Update cache with the new result
 		ic_cache_update(var->vm, var, name, node);
@@ -1282,8 +1285,26 @@ inline var_t* var_find_var(var_t* var, const char*name) {
 	return NULL;
 }
 
-inline node_t* var_find_create(var_t* var, const char*name) {
-	node_t* n = var_find(var, name);
+inline var_t* var_find_member_var(var_t* var, const char*name) {
+	// Try to find in inline cache first
+	node_t* node = ic_cache_lookup(var->vm, var, name);
+	if(node != NULL) {
+		// Cache hit!
+		return node->var;
+	}
+	
+	// Cache miss, perform normal lookup
+	node = var_find_member(var, name);
+	if(node != NULL) {
+		// Update cache with the new result
+		ic_cache_update(var->vm, var, name, node);
+		return node->var;
+	}
+	return NULL;
+}
+
+inline node_t* var_find_own_member_create(var_t* var, const char*name) {
+	node_t* n = var_find_own_member(var, name);
 	if(n != NULL)
 		return n;
 	n = var_add(var, name, NULL);
@@ -1300,7 +1321,7 @@ node_t* var_get(var_t* var, int32_t index) {
 node_t* var_array_get(var_t* var, int32_t index) {
 	var_t* arr_var = var;
 	if(var->is_array)
-	arr_var = var_find_var(var, "_ARRAY_");
+	arr_var = var_find_own_member_var(var, "_ARRAY_");
 	if(arr_var == NULL)
 		return NULL;
 
@@ -1331,7 +1352,7 @@ node_t* var_array_set(var_t* var, int32_t index, var_t* set_var) {
 
 node_t* var_array_add(var_t* var, var_t* add_var) {
 	node_t* ret = NULL;
-	var_t* arr_var = var_find_var(var, "_ARRAY_");
+	var_t* arr_var = var_find_own_member_var(var, "_ARRAY_");
 	if(arr_var != NULL)
 		ret = var_add(arr_var, "", add_var);
 	return ret;
@@ -1339,14 +1360,14 @@ node_t* var_array_add(var_t* var, var_t* add_var) {
 
 node_t* var_array_add_head(var_t* var, var_t* add_var) {
 	node_t* ret = NULL;
-	var_t* arr_var = var_find_var(var, "_ARRAY_");
+	var_t* arr_var = var_find_own_member_var(var, "_ARRAY_");
 	if(arr_var != NULL)
 		ret = var_add_head(arr_var, "", add_var);
 	return ret;
 }
 
 uint32_t var_array_size(var_t* var) {
-	var_t* arr_var = var_find_var(var, "_ARRAY_");
+	var_t* arr_var = var_find_own_member_var(var, "_ARRAY_");
 	if(arr_var == NULL)
 		return 0;
 	return arr_var->children.size;
@@ -1367,14 +1388,14 @@ void var_array_reverse(var_t* arr) {
 }
 
 node_t* var_array_remove(var_t* var, int32_t index) {
-	var_t* arr_var = var_find_var(var, "_ARRAY_");
+	var_t* arr_var = var_find_own_member_var(var, "_ARRAY_");
 	if(arr_var == NULL)
 		return NULL;
 	return (node_t*)array_remove(&arr_var->children, index);
 }
 
 void var_array_del(var_t* var, int32_t index) {
-	var_t* arr_var = var_find_var(var, "_ARRAY_");
+	var_t* arr_var = var_find_own_member_var(var, "_ARRAY_");
 	if(arr_var == NULL)
 		return;
 	array_del(&arr_var->children, index, node_free);
@@ -1716,13 +1737,12 @@ inline var_t* var_new_block(vm_t* vm) {
 }
 
 inline var_t* var_new_array(vm_t* vm) {
-	var_t* var = var_new_obj_no_proto(vm, NULL, NULL);
+	var_t* var = var_new_obj(vm, vm->var_Array, NULL, NULL);
 	var->is_array = 1;
 	var_t* members = var_new_obj_no_proto(vm, NULL, NULL);
 	node_t* n = var_add(var, "_ARRAY_", members);
 	n->be_unenumerable = 1;
 	n->invisable = 1;
-	var_set_prototype(var, vm->var_Array);
 	return var;
 }
 
@@ -1754,6 +1774,12 @@ inline var_t* var_new_obj_no_proto(vm_t* vm, void*p, free_func_t fr) {
 	var->type = V_OBJECT;
 	var->value = p;
 	var->free_func = fr;
+	return var;
+}
+
+inline var_t* var_new_obj(vm_t* vm, var_t* proto, void*p, free_func_t fr) {
+	var_t* var = var_new_obj_no_proto(vm, p, fr);
+	var_set_prototype(var, proto);
 	return var;
 }
 
@@ -2364,14 +2390,14 @@ node_t* vm_find(vm_t* vm, const char* name) {
 	var_t* var = vm_get_scope_var(vm);
 	if(var_empty(var))
 		return NULL;
-	return var_find(var, name);	
+	return var_find_own_member(var, name);	
 }
 
 node_t* vm_find_in_class(var_t* var, const char* name) {
 	var_t* proto = var_get_prototype(var);
 	while(proto != NULL) {
 		node_t* ret = NULL;
-		ret = var_find(proto, name);
+		ret = var_find_own_member(proto, name);
 		if(ret != NULL) {
 			if(ret->var != NULL && ret->var->is_func)
 				return ret;
@@ -2382,6 +2408,28 @@ node_t* vm_find_in_class(var_t* var, const char* name) {
 		proto = var_get_prototype(proto);
 	}
 	return NULL;
+}
+
+void vm_throw(vm_t* vm, const char* message) {
+	var_t* err = var_new_obj(vm, vm->var_Error, NULL, NULL);
+	var_t* msg = var_find_member_var(err, "message");
+	if(msg != NULL)
+		var_set_str(msg, message);
+	vm_push(vm, err);
+	while(true) {
+		scope_t* sc = vm_get_scope(vm);
+		if(sc == NULL) {
+			mario_error("Error: 'throw' not in any try...catch!\n");
+			vm_terminate(vm);
+			break;
+		}
+
+		if(sc->is_try) {
+			vm->pc = sc->pc;
+			break;
+		}
+		vm_pop_scope(vm);
+	}
 }
 
 bool var_instanceof(var_t* var, var_t* proto) {
@@ -2398,8 +2446,8 @@ bool var_instanceof(var_t* var, var_t* proto) {
 	return false;
 }
 
-node_t* find_member(var_t* obj, const char* name) {
-	node_t* node = var_find(obj, name);
+node_t* var_find_member(var_t* obj, const char* name) {
+	node_t* node = var_find_own_member(obj, name);
 	if(node != NULL)
 		return node;
 
@@ -2412,7 +2460,7 @@ static inline node_t* vm_find_in_closure(var_t* closure, const char* name) {
 	node_t* ret = NULL;
 	for(i=0; i<sz; ++i) {
 		var_t* var = var_array_get_var(closure, i);
-		ret = var_find(var, name);
+		ret = var_find_own_member(var, name);
 		if(ret != NULL)
 			break;
 	}
@@ -2435,13 +2483,13 @@ static inline node_t* vm_find_in_scopes(vm_t* vm, const char* name) {
 	
 	while(sc != NULL) {
 		if(!var_empty(sc->var)) {
-			ret = var_find(sc->var, name);
+			ret = var_find_own_member(sc->var, name);
 			if(ret != NULL)
 				return ret;
 			
 			var_t* obj = get_obj(sc->var, THIS);
 			if(obj != NULL) {
-				ret = find_member(obj, name);
+				ret = var_find_member(obj, name);
 				if(ret != NULL)
 					return ret;
 			}
@@ -2449,7 +2497,7 @@ static inline node_t* vm_find_in_scopes(vm_t* vm, const char* name) {
 		sc = sc->prev;
 	}
 
-	return var_find(vm->root, name);
+	return var_find_own_member(vm->root, name);
 }
 
 static inline var_t* vm_this_in_scopes(vm_t* vm) {
@@ -2464,7 +2512,7 @@ inline node_t* vm_load_node(vm_t* vm, const char* name, bool create) {
 
 	node_t* n = NULL;
 	if(var != NULL)
-		n = find_member(var, name);
+		n = var_find_member(var, name);
 	if(n == NULL)
 		n =  vm_find_in_scopes(vm, name);	
 
@@ -2473,6 +2521,7 @@ inline node_t* vm_load_node(vm_t* vm, const char* name, bool create) {
 
 	if(!create) {
 		mario_error("Error: '%s' undefined!\n", name);	
+		vm_throw(vm, "Error: undefined!");
 		return NULL;
 	}
 
@@ -2565,7 +2614,7 @@ static var_t* find_func(vm_t* vm, var_t* obj, const char* fname) {
 	//try full name with arg_num
 	node_t* node = NULL;
 	if(obj != NULL) {
-		node = find_member(obj, fname);
+		node = var_find_member(obj, fname);
 	}
 	if(node == NULL) {
 		node = vm_find_in_scopes(vm, fname);
@@ -2986,7 +3035,7 @@ void do_get(vm_t* vm, var_t* v, const char* name) {
 		return;
 	}	
 
-	node_t* n = find_member(v, name);
+	node_t* n = var_find_member(v, name);
 	if(n != NULL) {
 		/*if(n->var->type == V_FUNC) {
 			func_t* func = var_get_func(n->var);
@@ -3032,19 +3081,19 @@ var_t* new_obj(vm_t* vm, const char* name, int arg_num) {
 
 	if(n == NULL || n->var->type != V_OBJECT) {
 		mario_error("Error: There is no class: '%s'!\n", name);
+		vm_throw(vm, "Error: undefined class!");
 		return NULL;
 	}
 
-	obj = var_new_obj_no_proto(vm, NULL, NULL);
-	var_instance_from(obj, n->var);
-	var_t* protoV = var_get_prototype(obj);
+	var_t* protoV = var_get_prototype(n->var);
+	obj = var_new_obj(vm, protoV, NULL, NULL);
 	var_t* constructor = NULL;
 
 	if(n->var->is_func) { // new object built by function call
 		constructor = n->var;
 	}
 	else {
-		constructor = var_find_var(protoV, CONSTRUCTOR);
+		constructor = var_find_member_var(protoV, CONSTRUCTOR);
 	}
 
 	if(constructor != NULL) {
@@ -3104,7 +3153,7 @@ var_t* call_m_func(vm_t* vm, var_t* obj, var_t* func, var_t* args) {
 var_t* call_m_func_by_name(vm_t* vm, var_t* obj, const char* func_name, var_t* args) {
 	if(obj == NULL)
 		obj = vm->root;
-	node_t* func = find_member(obj, func_name);
+	node_t* func = var_find_member(obj, func_name);
 	if(func == NULL || func->var->is_func == 0) {
 		mario_debug("[debug] Interrupt function '%s' not defined!\n", func_name);
 		return NULL;
@@ -3198,7 +3247,7 @@ void try_interrupter(vm_t* vm) {
 		}
 		else if(sig->handle_func_name != NULL) {
 			//if func undefined yet, keep it and try next sig
-			node_t* func_node = find_member(sig->obj, sig->handle_func_name->cstr);
+			node_t* func_node = var_find_member(sig->obj, sig->handle_func_name->cstr);
 			if(func_node != NULL && func_node->var->is_func) { 
 				func = var_ref(func_node->var);
 				break;
@@ -3645,10 +3694,10 @@ static inline void handle_var(vm_t* vm, PC ins, opr_code_t instr, uint32_t offse
 static inline void handle_const(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
 	const char* s = bc_getstr(&vm->bc, offset);
 	var_t* v = vm_get_scope_var(vm);
-	node_t *node = var_find(v, s);
+	node_t *node = var_find_own_member(v, s);
 	if(node != NULL) {
 		mario_error("Error: let '%s' has already existed!\n", s);
-		vm_terminate(vm);
+		vm_throw(vm, "Error: let has already existed!");
 	}
 	else {
 		node = var_add(v, s, NULL);
@@ -3720,6 +3769,7 @@ static inline void handle_asign(vm_t* vm, PC ins, opr_code_t instr, uint32_t off
 	}
 	else {
 		mario_error("Error: Can not change a const variable: '%s'!\n", n->name);
+		vm_throw(vm, "Error: Can not change a const variable!");
 	}
 
 	if((ins & INSTR_OPT_CACHE) == 0) {
@@ -3772,11 +3822,11 @@ static inline void handle_call(vm_t* vm, PC ins, opr_code_t instr, uint32_t offs
 		func = find_func(vm, obj, name->cstr);
 
 	if(func != NULL && !func->is_func) {
-		var_t* constr = var_find_var(func, CONSTRUCTOR);
+		var_t* constr = var_find_own_member_var(func, CONSTRUCTOR);
 		if(constr == NULL) {
 			var_t* protoV = var_get_prototype(func);
 			if(protoV != NULL)
-				func = var_find_var(protoV, CONSTRUCTOR);
+				func = var_find_own_member_var(protoV, CONSTRUCTOR);
 			else
 				func = NULL;
 		}
@@ -3795,6 +3845,7 @@ static inline void handle_call(vm_t* vm, PC ins, opr_code_t instr, uint32_t offs
 		}
 		vm_push(vm, var_new(vm));
 		mario_error("Error: can not find function '%s'!\n", name->cstr);
+		vm_throw(vm, "Error: can not find function!");
 	}
 	mstr_free(name);
 
@@ -3839,8 +3890,7 @@ static inline void handle_func(vm_t* vm, PC ins, opr_code_t instr, uint32_t offs
 static inline void handle_obj(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
 	var_t* obj;
 	if(instr == INSTR_OBJ) {
-		obj = var_new_obj_no_proto(vm, NULL, NULL);
-		var_set_prototype(obj, var_get_prototype(vm->var_Object));
+		obj = var_new_obj(vm, var_get_prototype(vm->var_Object), NULL, NULL);
 	}
 	else
 		obj = var_new_array(vm);
@@ -3860,7 +3910,7 @@ static inline void handle_array_at(vm_t* vm, PC ins, opr_code_t instr, uint32_t 
 	node_t* n = NULL;
 	if(v2->type == V_STRING) {
 		const char* s = var_get_str(v2);
-		n = var_find_create(v1, s);
+		n = var_find_own_member_create(v1, s);
 	}
 	else {
 		int at = var_get_int(v2);
@@ -4266,7 +4316,7 @@ float get_float(var_t* var, const char* name) {
 var_t* get_obj(var_t* var, const char* name) {
 	//if(strcmp(name, THIS) == 0)
 	//	return var;
-	node_t* n = var_find(var, name);
+	node_t* n = var_find_own_member(var, name);
 	if(n == NULL)
 		return NULL;
 	return n->var;
@@ -4283,7 +4333,7 @@ var_t* get_obj_member(var_t* env, const char* name) {
 	var_t* obj = get_obj(env, THIS);
 	if(obj == NULL)
 		return NULL;
-	return var_find_var(obj, name);
+	return var_find_own_member_var(obj, name);
 }
 
 var_t* set_obj_member(var_t* env, const char* name, var_t* var) {
