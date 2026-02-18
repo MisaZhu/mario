@@ -1737,7 +1737,7 @@ inline var_t* var_new_block(vm_t* vm) {
 }
 
 inline var_t* var_new_array(vm_t* vm) {
-	var_t* var = var_new_obj(vm, vm->var_Array, NULL, NULL);
+	var_t* var = var_new_obj(vm, var_get_prototype(vm->var_Array), NULL, NULL);
 	var->is_array = 1;
 	var_t* members = var_new_obj_no_proto(vm, NULL, NULL);
 	node_t* n = var_add(var, "_ARRAY_", members);
@@ -1751,7 +1751,7 @@ inline var_t* var_new_int(vm_t* vm, int i) {
 	var->type = V_INT;
 	var->value = _malloc(sizeof(int));
 	*((int*)var->value) = i;
-	var_set_prototype(var, vm->var_Number);
+	var_set_prototype(var, var_get_prototype(vm->var_Number));
 	return var;
 }
 
@@ -1788,7 +1788,7 @@ inline var_t* var_new_float(vm_t* vm, float i) {
 	var->type = V_FLOAT;
 	var->value = _malloc(sizeof(float));
 	*((float*)var->value) = i;
-	var_set_prototype(var, vm->var_Number);
+	var_set_prototype(var, var_get_prototype(vm->var_Number));
 	return var;
 }
 
@@ -1798,7 +1798,7 @@ inline var_t* var_new_str(vm_t* vm, const char* s) {
 	var->size = (uint32_t)strlen(s);
 	var->value = _malloc(var->size + 1);
 	memcpy(var->value, s, var->size + 1);
-	var_set_prototype(var, vm->var_String);
+	var_set_prototype(var, var_get_prototype(vm->var_String));
 	return var;
 }
 
@@ -1811,7 +1811,7 @@ inline var_t* var_new_str2(vm_t* vm, const char* s, uint32_t len) {
 	var->value = _malloc(var->size + 1);
 	memcpy(var->value, s, var->size + 1);
 	((char*)(var->value))[var->size] = 0;
-	var_set_prototype(var, vm->var_String);
+	var_set_prototype(var, var_get_prototype(vm->var_String));
 	return var;
 }
 
@@ -2631,7 +2631,7 @@ static var_t* var_new_func(vm_t* vm, func_t* func) {
 	var->free_func = func_free;
 	var->value = func;
 
-	var_t* proto = vm->var_Object;
+	var_t* proto = var_get_prototype(vm->var_Object);
 	if(proto == NULL)
 		proto = var_new_obj_no_proto(vm, NULL, NULL);
 	var_set_prototype(var, proto);
