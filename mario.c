@@ -1361,6 +1361,9 @@ static void load_ncache_init(vm_t* vm) {
 }
 
 static void load_ncache_invalidate(vm_t* vm, node_t* node) {
+	if(node == NULL || !node->ncached)
+        return;
+
     uint32_t i;
 	PC* code = vm->bc.code_buf;
     for(i=0; i<LOAD_NCACHE_MAX; ++i) {
@@ -1378,6 +1381,7 @@ static void load_ncache(vm_t* vm, node_t* node, PC instr_pc) {
     for(i=0; i<LOAD_NCACHE_MAX; ++i) {
         load_ncache_t* l = &vm->load_ncache[i];	
         if(l->node == NULL) {
+			node->ncached = true;
 			l->node = node;
 			l->old_instr_pc = instr_pc;
 			l->old_instr = code[instr_pc];

@@ -408,11 +408,12 @@ typedef struct st_func {
 
 //script node for var member children
 typedef struct st_node {
-	int16_t magic: 8; //1 for node
-	int16_t be_const : 2;
-	int16_t be_inherited : 2;
-	int16_t be_unenumerable : 2;
-	int16_t invisable : 2;
+	uint16_t magic: 8; //1 for node
+	uint16_t be_const : 2;
+	uint16_t be_inherited : 2;
+	uint16_t be_unenumerable : 2;
+	uint16_t invisable : 1;
+	uint16_t ncached : 1;
 	char* name;
 	var_t* var;
 } node_t;
@@ -438,7 +439,7 @@ typedef struct st_ic_entry {
 } load_ncache_t;
 
 #ifdef MARIO_CACHE
-#define VAR_CACHE_MAX 128
+#define VAR_CACHE_MAX   128
 #define LOAD_NCACHE_MAX 128
 #endif
 
