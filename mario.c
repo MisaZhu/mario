@@ -67,7 +67,6 @@ inline void mario_error(const char *format, ...) {
 /**======hash map functions======*/
 
 #define HASH_MAP_INITIAL_CAPACITY 16
-#define HASH_MAP_LOAD_FACTOR 0.75
 
 // Hash function for strings
 static uint32_t hash_string(const char* key) {
