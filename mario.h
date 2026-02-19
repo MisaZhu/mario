@@ -514,7 +514,7 @@ node_t* var_add(var_t* var, const char* name, var_t* add);
 node_t* var_add_head(var_t* var, const char* name, var_t* add);
 node_t* var_find_own_member(var_t* var, const char*name);
 var_t* var_find_own_member_var(var_t* var, const char*name);
-node_t* var_find_own_member_create(var_t* var, const char*name);
+node_t* var_find_member_create(var_t* var, const char*name);
 node_t* var_get(var_t* var, int32_t index);
 
 node_t* var_array_get(var_t* var, int32_t index);

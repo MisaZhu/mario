@@ -1473,8 +1473,8 @@ inline var_t* var_find_member_var(var_t* var, const char*name) {
 	return NULL;
 }
 
-inline node_t* var_find_own_member_create(var_t* var, const char*name) {
-	node_t* n = var_find_own_member(var, name);
+inline node_t* var_find_member_create(var_t* var, const char*name) {
+	node_t* n = var_find_member(var, name);
 	if(n != NULL)
 		return n;
 	n = var_add(var, name, NULL);
@@ -4170,7 +4170,7 @@ static inline void handle_array_at(vm_t* vm, PC ins, opr_code_t instr, uint32_t 
 	node_t* n = NULL;
 	if(v2->type == V_STRING) {
 		const char* s = var_get_str(v2);
-		n = var_find_own_member_create(v1, s);
+		n = var_find_member_create(v1, s);
 	}
 	else {
 		int at = var_get_int(v2);
