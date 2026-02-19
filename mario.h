@@ -434,9 +434,6 @@ typedef struct st_isignal {
 #define VAR_CACHE_MAX 128
 #endif
 
-// Inline Cache (IC) for property access optimization
-#define IC_CACHE_MAX 128
-
 typedef struct st_ic_entry {
     var_t* object;      // The object we looked up
     const char* name;   // The property name
@@ -476,10 +473,6 @@ typedef struct st_vm {
 	var_t* var_cache[VAR_CACHE_MAX];
 	uint32_t var_cache_used;
 	#endif
-
-	// Inline Cache for property access
-	ic_entry_t ic_cache[IC_CACHE_MAX];
-	uint32_t ic_cache_used;
 
 	uint32_t this_strIndex;
 	var_t* var_Object;

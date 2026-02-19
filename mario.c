@@ -3,12 +3,6 @@
 #include <stdio.h>
 #include <stdarg.h>
 
-// Forward declarations for inline cache functions
-static void ic_cache_init(vm_t* vm);
-static node_t* ic_cache_lookup(vm_t* vm, var_t* object, const char* name);
-static void ic_cache_update(vm_t* vm, var_t* object, const char* name, node_t* node);
-static void ic_cache_invalidate(vm_t* vm, var_t* object, const char* name);
-
 #ifdef MRCIO_THREAD
 #include <pthread.h>
 #endif
@@ -1418,11 +1412,6 @@ node_t* var_add(var_t* var, const char* name, var_t* add) {
 	else if(add != NULL)
 		node_replace(node, add);
 
-	// Invalidate inline cache for this property
-	if(name[0] != 0) {
-		ic_cache_invalidate(var->vm, var, name);
-	}
-
 	return node;
 }
 
@@ -1446,25 +1435,9 @@ inline var_t* var_find_own_member_var(var_t* var, const char*name) {
 }
 
 node_t* var_find_member(var_t* obj, const char* name) {
-	// Try to find in inline cache first
-	node_t* node = NULL;
-	if(!var_empty(obj))
-		node = ic_cache_lookup(obj->vm, obj, name);
-
-	if(node != NULL) {
-		// Cache hit!
-		return node;
-	}
-
-	// Cache miss, perform normal lookup
-	node = var_find_own_member(obj, name);
+	node_t* node = var_find_own_member(obj, name);
 	if(node == NULL)
 		node = vm_find_in_class(obj, name);
-
-	if(node != NULL) {
-		// Update cache with the new result
-		ic_cache_update(obj->vm, obj, name, node);
-	}
 	return node;
 }
 
@@ -2331,62 +2304,6 @@ static bool try_cache(vm_t* vm, PC* ins, var_t* v) {
 }
 
 #endif
-
-// Inline Cache (IC) functions for property access optimization
-
-static void ic_cache_init(vm_t* vm) {
-    uint32_t i;
-    for(i=0; i<IC_CACHE_MAX; ++i) {
-        vm->ic_cache[i].object = NULL;
-        vm->ic_cache[i].name = NULL;
-        vm->ic_cache[i].node = NULL;
-    }
-    vm->ic_cache_used = 0;
-}
-
-static node_t* ic_cache_lookup(vm_t* vm, var_t* object, const char* name) {
-    uint32_t i;
-    for(i=0; i<vm->ic_cache_used; ++i) {
-        ic_entry_t* entry = &vm->ic_cache[i];
-        if(entry->object == object && entry->name == name) {
-            // Cache hit!
-            return entry->node;
-        }
-    }
-    return NULL; // Cache miss
-}
-
-static void ic_cache_update(vm_t* vm, var_t* object, const char* name, node_t* node) {
-    if(vm->ic_cache_used >= IC_CACHE_MAX) {
-        // Cache is full, evict the oldest entry (LRU policy)
-        uint32_t i;
-        for(i=0; i<IC_CACHE_MAX-1; ++i) {
-            vm->ic_cache[i] = vm->ic_cache[i+1];
-        }
-        vm->ic_cache_used = IC_CACHE_MAX-1;
-    }
-    
-    // Add new entry
-    ic_entry_t* entry = &vm->ic_cache[vm->ic_cache_used++];
-    entry->object = object;
-    entry->name = name;
-    entry->node = node;
-}
-
-static void ic_cache_invalidate(vm_t* vm, var_t* object, const char* name) {
-    uint32_t i, j;
-    for(i=0; i<vm->ic_cache_used; ++i) {
-        ic_entry_t* entry = &vm->ic_cache[i];
-        if(entry->object == object && (name == NULL || entry->name == name)) {
-            // Invalidate this entry
-            for(j=i; j<vm->ic_cache_used-1; ++j) {
-                vm->ic_cache[j] = vm->ic_cache[j+1];
-            }
-            vm->ic_cache_used--;
-            i--; // Adjust index since we removed an entry
-        }
-    }
-}
 
 /**======Interrupt functions======*/
 
@@ -4008,19 +3925,6 @@ static inline void handle_asign(vm_t* vm, PC ins, opr_code_t instr, uint32_t off
 	var_unref(n->var);
 	if(modi) {
 		node_replace(n, v);
-		// Invalidate inline cache for this variable
-		if(n->name != NULL && n->name[0] != 0) {
-			// Find the object that contains this node
-			// Note: This is a simplified approach, assuming the node is in the current scope
-			// In a real implementation, you would need to track the parent object of each node
-			// For now, we'll invalidate all cache entries for safety
-			uint32_t i;
-			for(i=0; i<vm->ic_cache_used; ++i) {
-				if(vm->ic_cache[i].name == n->name) {
-					ic_cache_invalidate(vm, vm->ic_cache[i].object, n->name);
-				}
-			}
-		}
 	}
 	else {
 		mario_debug("Error: Can not change a const variable: '%s'!\n", n->name);
@@ -4698,9 +4602,6 @@ vm_t* vm_new(bool compiler(bytecode_t *bc, const char* input)) {
 	#ifdef MARIO_CACHE
 	var_cache_init(vm);
 	#endif
-
-	// Initialize inline cache
-	ic_cache_init(vm);
 
 	#ifdef MARIO_THREAD
 	pthread_mutex_init(&vm->thread_lock, NULL);
