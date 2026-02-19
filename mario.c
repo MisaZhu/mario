@@ -1458,9 +1458,9 @@ node_t* var_find_member(var_t* obj, const char* name) {
 
 	// Cache miss, perform normal lookup
 	node = var_find_own_member(obj, name);
-	if(node != NULL)
-		return node;
-	node = vm_find_in_class(obj, name);
+	if(node == NULL)
+		node = vm_find_in_class(obj, name);
+
 	if(node != NULL) {
 		// Update cache with the new result
 		ic_cache_update(obj->vm, obj, name, node);
