@@ -1311,6 +1311,84 @@ PC bc_add_instr(bytecode_t* bc, PC anchor, opr_code_t op, PC target) {
 	return bc->cindex;
 } 
 
+/** var cache for const value --------------*/
+
+#ifdef MARIO_CACHE
+
+static void var_cache_init(vm_t* vm) {
+    uint32_t i;
+    for(i=0; i<vm->var_cache_used; ++i) {
+        vm->var_cache[i] = NULL;
+    }
+    vm->var_cache_used = 0;
+}
+
+static void var_cache_free(vm_t* vm) {
+    uint32_t i;
+    for(i=0; i<vm->var_cache_used; ++i) {
+        var_t* v = vm->var_cache[i];
+        var_unref(v);
+        vm->var_cache[i] = NULL;
+    }
+    vm->var_cache_used = 0;
+}
+
+static int32_t var_cache(vm_t* vm, var_t* v) {
+    if(vm->var_cache_used >= VAR_CACHE_MAX)
+        return -1;
+    vm->var_cache[vm->var_cache_used] = var_ref(v);
+    vm->var_cache_used++;
+    return vm->var_cache_used-1;
+}
+
+static bool try_var_cache(vm_t* vm, PC* ins, var_t* v) {
+    if((*ins) & INSTR_OPT_CACHE) {
+        int index = var_cache(vm, v); 
+        if(index >= 0) 
+            *ins = INS(INSTR_CACHE, index);
+        return true;
+    }
+
+    *ins = (*ins) | INSTR_OPT_CACHE;
+    return false;
+}
+
+static void load_ncache_init(vm_t* vm) {
+    uint32_t i;
+    for(i=0; i<LOAD_NCACHE_MAX; ++i) {
+        memset(&vm->load_ncache[i], 0, sizeof(load_ncache_t));
+    }
+}
+
+static void load_ncache_invalidate(vm_t* vm, node_t* node) {
+    uint32_t i;
+	PC* code = vm->bc.code_buf;
+    for(i=0; i<LOAD_NCACHE_MAX; ++i) {
+        load_ncache_t* l = &vm->load_ncache[i];
+        if(l->node == node) {
+			code[l->old_instr_pc] = l->old_instr;
+            memset(l, 0, sizeof(load_ncache_t));
+        }
+    }
+}
+
+static void load_ncache(vm_t* vm, node_t* node, PC instr_pc) {
+	uint32_t i;
+	PC* code = vm->bc.code_buf;
+    for(i=0; i<LOAD_NCACHE_MAX; ++i) {
+        load_ncache_t* l = &vm->load_ncache[i];	
+        if(l->node == NULL) {
+			l->node = node;
+			l->old_instr_pc = instr_pc;
+			l->old_instr = code[instr_pc];
+			code[instr_pc] = INS(INSTR_NCACHE, i);
+			break;
+        }
+    }
+}
+
+#endif
+
 /**======var functions======*/
 load_m_func_t _load_m_func = NULL;
 
@@ -1364,6 +1442,10 @@ void node_free(void* p) {
 	node_t* node = (node_t*)p;
 	if(node == NULL)
 		return;
+	
+	if(node->var != NULL) {
+		load_ncache_invalidate(node->var->vm, node);
+	}
 
 	_free(node->name);
 	if(!var_empty(node->var)) {
@@ -2260,50 +2342,6 @@ void var_to_json_str(var_t* var, mstr_t* ret, int level) {
 		array_remove_all(&done);
 	}
 }
-
-/** var cache for const value --------------*/
-
-#ifdef MARIO_CACHE
-
-static void var_cache_init(vm_t* vm) {
-    uint32_t i;
-    for(i=0; i<vm->var_cache_used; ++i) {
-        vm->var_cache[i] = NULL;
-    }
-    vm->var_cache_used = 0;
-}
-
-static void var_cache_free(vm_t* vm) {
-    uint32_t i;
-    for(i=0; i<vm->var_cache_used; ++i) {
-        var_t* v = vm->var_cache[i];
-        var_unref(v);
-        vm->var_cache[i] = NULL;
-    }
-    vm->var_cache_used = 0;
-}
-
-static int32_t var_cache(vm_t* vm, var_t* v) {
-    if(vm->var_cache_used >= VAR_CACHE_MAX)
-        return -1;
-    vm->var_cache[vm->var_cache_used] = var_ref(v);
-    vm->var_cache_used++;
-    return vm->var_cache_used-1;
-}
-
-static bool try_cache(vm_t* vm, PC* ins, var_t* v) {
-    if((*ins) & INSTR_OPT_CACHE) {
-        int index = var_cache(vm, v); 
-        if(index >= 0) 
-            *ins = INS(INSTR_CACHE, index);
-        return true;
-    }
-
-    *ins = (*ins) | INSTR_OPT_CACHE;
-    return false;
-}
-
-#endif
 
 /**======Interrupt functions======*/
 
@@ -3549,6 +3587,7 @@ static inline void handle_njmp(vm_t* vm, PC ins, opr_code_t instr, uint32_t offs
 
 static inline void handle_load(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
 	bool loaded = false;
+	node_t* node = NULL;
 	if(offset == vm->this_strIndex) {
 		var_t* thisV = vm_this_in_scopes(vm);
 		if(thisV != NULL) {
@@ -3556,20 +3595,25 @@ static inline void handle_load(vm_t* vm, PC ins, opr_code_t instr, uint32_t offs
 			loaded = true;
 		}
 	}
+
 	if(!loaded) {
 		const char* s = bc_getstr(&vm->bc, offset);
-		node_t* n = vm_load_node(vm, s, false);
-		if(n == NULL) {
+		node = vm_load_node(vm, s, false);
+		if(node == NULL) {
 			scope_t* sc = vm_get_strict_scope(vm); //check strict mode
 			if(sc != NULL) {
 				vm_throw(vm, "'%s' undefined!", s);	
 				return;
 			}
 			var_t* var = vm_get_scope_var(vm);
-			n = var_add(var, s, NULL);
+			node = var_add(var, s, NULL);
 		}
-		vm_push_node(vm, n);
+		vm_push_node(vm, node);
 	}
+
+	if(node == NULL || node->var == NULL)
+		return;
+	load_ncache(vm, node, vm->pc-1);
 }
 
 static inline void handle_compare(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
@@ -3646,6 +3690,11 @@ static inline void handle_continue(vm_t* vm, PC ins, opr_code_t instr, uint32_t 
 static inline void handle_cache(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
 	var_t* v = vm->var_cache[offset];
 	vm_push(vm, v);
+}
+
+static inline void handle_ncache(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
+	node_t* node = vm->load_ncache[offset].node;
+	vm_push_node(vm, node);
 }
 #endif
 
@@ -3882,7 +3931,7 @@ static inline void handle_int(vm_t* vm, PC ins, opr_code_t instr, uint32_t offse
 	register PC* code = vm->bc.code_buf;
 	var_t* v = var_new_int(vm, (int)code[vm->pc++]);
 	#ifdef MARIO_CACHE
-	if(try_cache(vm, &code[vm->pc-2], v))
+	if(try_var_cache(vm, &code[vm->pc-2], v))
 		code[vm->pc-1] = INSTR_NIL;
 	#endif
 	vm_push(vm, v);
@@ -3892,7 +3941,7 @@ static inline void handle_int_s(vm_t* vm, PC ins, opr_code_t instr, uint32_t off
 	register PC* code = vm->bc.code_buf;
 	var_t* v = var_new_int(vm, offset);
 	#ifdef MARIO_CACHE
-	try_cache(vm, &code[vm->pc-1], v);
+	try_var_cache(vm, &code[vm->pc-1], v);
 	#endif
 	vm_push(vm, v);
 }
@@ -3901,7 +3950,7 @@ static inline void handle_float(vm_t* vm, PC ins, opr_code_t instr, uint32_t off
 	register PC* code = vm->bc.code_buf;
 	var_t* v = var_new_float(vm, *(float*)(&code[vm->pc++]));
 	#ifdef MARIO_CACHE
-	if(try_cache(vm, &code[vm->pc-2], v))
+	if(try_var_cache(vm, &code[vm->pc-2], v))
 		code[vm->pc-1] = INSTR_NIL;
 	#endif
 	vm_push(vm, v);
@@ -3912,7 +3961,7 @@ static inline void handle_str(vm_t* vm, PC ins, opr_code_t instr, uint32_t offse
 	const char* s = bc_getstr(&vm->bc, offset);
 	var_t* v = var_new_str(vm, s);
 	#ifdef MARIO_CACHE	
-	try_cache(vm, &code[vm->pc-1], v);
+	try_var_cache(vm, &code[vm->pc-1], v);
 	#endif
 	vm_push(vm, v);
 }
@@ -4261,6 +4310,7 @@ static void init_instr_table(void) {
 	instr_table[INSTR_NEW] = handle_new;
 #ifdef MARIO_CACHE
 	instr_table[INSTR_CACHE] = handle_cache;
+	instr_table[INSTR_NCACHE] = handle_ncache;
 #endif
 
 	instr_table[INSTR_POP] = handle_pop;
@@ -4601,6 +4651,7 @@ vm_t* vm_new(bool compiler(bytecode_t *bc, const char* input)) {
 
 	#ifdef MARIO_CACHE
 	var_cache_init(vm);
+	load_ncache_init(vm);
 	#endif
 
 	#ifdef MARIO_THREAD

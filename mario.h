@@ -303,6 +303,7 @@ typedef struct st_bytecode {
 
 #define INSTR_NEW          0x070 // new
 #define INSTR_CACHE        0x071 // CACHE index   : load cache at 'index' and push 
+#define INSTR_NCACHE       0x072 // NCACHE index   : load cache at 'index' and push 
 
 #define INSTR_POP          0x080 // pop and release
 
@@ -430,15 +431,16 @@ typedef struct st_isignal {
 } isignal_t;
 #endif
 
+typedef struct st_ic_entry {
+    PC old_instr_pc;     
+    PC old_instr;      
+    node_t* node;
+} load_ncache_t;
+
 #ifdef MARIO_CACHE
 #define VAR_CACHE_MAX 128
+#define LOAD_NCACHE_MAX 128
 #endif
-
-typedef struct st_ic_entry {
-    var_t* object;      // The object we looked up
-    const char* name;   // The property name
-    node_t* node;       // The cached node (contains the property value)
-} ic_entry_t;
 
 #define VM_STACK_MAX    32
 
@@ -472,6 +474,7 @@ typedef struct st_vm {
 	#ifdef MARIO_CACHE
 	var_t* var_cache[VAR_CACHE_MAX];
 	uint32_t var_cache_used;
+	load_ncache_t load_ncache[LOAD_NCACHE_MAX];
 	#endif
 
 	uint32_t this_strIndex;
