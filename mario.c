@@ -1438,36 +1438,39 @@ inline node_t* var_find_own_member(var_t* var, const char*name) {
 }
 
 inline var_t* var_find_own_member_var(var_t* var, const char*name) {
-	// Try to find in inline cache first
-	node_t* node = ic_cache_lookup(var->vm, var, name);
+	node_t* node = var_find_own_member(var, name);
 	if(node != NULL) {
-		// Cache hit!
-		return node->var;
-	}
-	
-	// Cache miss, perform normal lookup
-	node = var_find_own_member(var, name);
-	if(node != NULL) {
-		// Update cache with the new result
-		ic_cache_update(var->vm, var, name, node);
 		return node->var;
 	}
 	return NULL;
 }
 
-inline var_t* var_find_member_var(var_t* var, const char*name) {
+node_t* var_find_member(var_t* obj, const char* name) {
 	// Try to find in inline cache first
-	node_t* node = ic_cache_lookup(var->vm, var, name);
+	node_t* node = NULL;
+	if(!var_empty(obj))
+		node = ic_cache_lookup(obj->vm, obj, name);
+
 	if(node != NULL) {
 		// Cache hit!
-		return node->var;
+		return node;
 	}
-	
+
 	// Cache miss, perform normal lookup
-	node = var_find_member(var, name);
+	node = var_find_own_member(obj, name);
+	if(node != NULL)
+		return node;
+	node = vm_find_in_class(obj, name);
 	if(node != NULL) {
 		// Update cache with the new result
-		ic_cache_update(var->vm, var, name, node);
+		ic_cache_update(obj->vm, obj, name, node);
+	}
+	return node;
+}
+
+inline var_t* var_find_member_var(var_t* var, const char*name) {
+	node_t* node = var_find_member(var, name);
+	if(node != NULL) {
 		return node->var;
 	}
 	return NULL;
@@ -2638,14 +2641,6 @@ bool var_instanceof(var_t* var, var_t* proto) {
 		protov = var_get_prototype(protov);
 	}
 	return false;
-}
-
-node_t* var_find_member(var_t* obj, const char* name) {
-	node_t* node = var_find_own_member(obj, name);
-	if(node != NULL)
-		return node;
-
-	return vm_find_in_class(obj, name);
 }
 
 static inline node_t* vm_find_in_closure(var_t* closure, const char* name) {

@@ -431,11 +431,11 @@ typedef struct st_isignal {
 #endif
 
 #ifdef MARIO_CACHE
-#define VAR_CACHE_MAX 32
+#define VAR_CACHE_MAX 128
 #endif
 
 // Inline Cache (IC) for property access optimization
-#define IC_CACHE_MAX 16
+#define IC_CACHE_MAX 128
 
 typedef struct st_ic_entry {
     var_t* object;      // The object we looked up
