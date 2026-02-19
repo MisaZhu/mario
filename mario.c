@@ -63,13 +63,13 @@ inline void mario_error(const char *format, ...) {
 #define HASH_MAP_INITIAL_CAPACITY 16
 
 // Hash function for strings
-static uint32_t hash_string(const char* key) {
-    uint32_t hash = 0;
-    while (*key) {
-        hash = hash * 31 + *key;
-        key++;
-    }
-    return hash;
+static uint32_t hash_string(const char* key) { 
+    uint32_t hash = 0; 
+    while (*key) { 
+        hash = (hash << 5) - hash + *key; 
+        key++; 
+    } 
+    return hash; 
 }
 
 // Create a new hash map
