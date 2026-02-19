@@ -2664,6 +2664,16 @@ static inline scope_t* vm_get_strict_scope(vm_t* vm) {
 	return NULL;
 }
 
+static inline scope_t* vm_get_loop_scope(vm_t* vm) {
+	scope_t* sc = vm_get_scope(vm);
+	while(sc != NULL) {
+		if(sc->is_loop)
+			return sc;
+		sc = sc->prev;
+	}
+	return NULL;
+}
+
 void vm_throw(vm_t* vm, const char *format, ...) {
 	char message[BUF_SIZE+1] = {0};
 	va_list ap;
@@ -3613,7 +3623,9 @@ static inline void handle_load(vm_t* vm, PC ins, opr_code_t instr, uint32_t offs
 
 	if(node == NULL || node->var == NULL)
 		return;
-	load_ncache(vm, node, vm->pc-1);
+
+	if(vm_get_loop_scope(vm) != NULL) //only cache in loop scope.
+		load_ncache(vm, node, vm->pc-1);
 }
 
 static inline void handle_compare(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
