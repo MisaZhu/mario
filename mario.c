@@ -2218,12 +2218,58 @@ void var_to_json_str(var_t* var, mstr_t* ret, int level) {
 		// children - handle with bracketed list
 		mstr_append(ret, "{\n");
 
-		// For now, we'll just output an empty object since hash_map_iterate isn't fully implemented
-		// TODO: Implement proper hash map iteration for JSON output
+		// 直接遍历 hash map，不使用回调函数
+		bool first = true;
+		uint32_t i;
+		for (i = 0; i < var->children.capacity; i++) {
+			hash_entry_t* entry = var->children.buckets[i];
+			while (entry) {
+				const char* key = entry->key;
+				node_t* node = (node_t*)entry->value;
 
-		mstr_add(ret, '\n');
+				// 跳过不可枚举的属性
+				if (node->be_unenumerable)
+					goto next_entry;
 
-		append_json_spaces(ret, level - 1);
+				// 跳过内部属性（如原型链）
+				if (strcmp(key, PROTOTYPE) == 0 || strcmp(key, "_ARRAY_") == 0)
+					goto next_entry;
+
+				// 添加逗号分隔符
+				if (!first) {
+					mstr_append(ret, ",\n");
+				} else {
+					first = false;
+				}
+
+				// 缩进
+				append_json_spaces(ret, level);
+
+				// 添加属性名
+				mstr_add(ret, '"');
+				mstr_append(ret, key);
+				mstr_add(ret, '"');
+				mstr_append(ret, ": ");
+
+				// 序列化属性值
+				mstr_t* value_str = mstr_new("");
+				var_to_json_str(node->var, value_str, level + 1);
+				mstr_append(ret, value_str->cstr);
+				mstr_free(value_str);
+
+			next_entry:
+				entry = entry->next;
+			}
+		}
+
+		// 如果没有属性，确保格式正确
+		if (first) {
+			append_json_spaces(ret, level);
+		} else {
+			mstr_add(ret, '\n');
+			append_json_spaces(ret, level - 1);
+		}
+
 		mstr_add(ret, '}');
 	} 
 	else {
