@@ -49,6 +49,35 @@ void array_remove_all(m_array_t* array);
 void array_clean(m_array_t* array, free_func_t fr);
 #define array_tail(array) (((array)->items == NULL || (array)->size == 0) ? NULL: (array)->items[(array)->size-1]);
 
+/**====== hash map functions ======*/
+
+// Hash map entry structure
+typedef struct st_hash_entry {
+	char* key;
+	void* value;
+	struct st_hash_entry* next;
+} hash_entry_t;
+
+// Hash map structure
+typedef struct st_hash_map {
+	hash_entry_t** buckets;
+	uint32_t size;
+	uint32_t capacity;
+	uint32_t load_factor_num;   // 负载因子分子
+	uint32_t load_factor_den;   // 负载因子分母
+} hash_map_t;
+
+// Hash map functions
+hash_map_t* hash_map_new(void);
+void hash_map_free(hash_map_t* map, free_func_t free_key, free_func_t free_value);
+void hash_map_init(hash_map_t* map);
+void hash_map_add(hash_map_t* map, const char* key, void* value);
+void* hash_map_get(hash_map_t* map, const char* key);
+void* hash_map_remove(hash_map_t* map, const char* key);
+uint32_t hash_map_size(hash_map_t* map);
+void hash_map_clean(hash_map_t* map, free_func_t free_key, free_func_t free_value);
+void hash_map_iterate(hash_map_t* map, void (*callback)(const char* key, void* value, void* user_data), void* user_data);
+
 /**====== string functions. ======*/
 
 typedef struct st_mstr {
@@ -359,7 +388,7 @@ typedef struct st_var {
 
 	struct st_var* prev; //for var list
 	struct st_var* next; //for var list
-	m_array_t children;
+	hash_map_t children;
 	struct st_vm* vm;
 } var_t;
 
