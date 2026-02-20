@@ -12,44 +12,186 @@ extern "C" {
 #endif
 
 /**======platform porting functions======*/
-void* (*_malloc)(uint32_t size) = NULL;
-void  (*_free)(void* p) = NULL;
-void  (*_out_func)(const char*) = NULL;
-void  free_none(void* p) { }
+
+void* (*_platform_malloc)(uint32_t size) = NULL;
+void  (*_platform_free)(void* p) = NULL;
+
+void  (*_platform_out)(const char*) = NULL;
 
 /**======memory functions======*/
+#ifdef MARIO_DEBUG
+typedef struct mem_block {
+	void* p;
+	uint32_t size;
+	const char* file;
+	uint32_t line;
+	struct mem_block *prev;
+	struct mem_block *next;
+} mem_block_t;
+
+static mem_block_t* _mem_head = NULL;
+
+#ifdef MARIO_THREAD
+static pthread_mutex_t _mem_lock;
+static inline void mem_lock_init() {
+	pthread_mutex_init(&_mem_lock, NULL);
+}
+static inline void mem_lock_destroy() {
+	pthread_mutex_destroy(&_mem_lock);
+}
+static inline void mem_lock() {
+	pthread_mutex_lock(&_mem_lock);
+}
+static inline void mem_unlock() {
+	pthread_mutex_unlock(&_mem_lock);
+}
+
+#else
+static inline void mem_lock_destroy() { }
+static inline void mem_lock_init() { }
+static inline void mem_lock() { }
+static inline void mem_unlock() { }
+#endif
+
+static inline void* raw_malloc(uint32_t size, const char* file, uint32_t line) {
+	if(size == 0)
+		return NULL;
+
+	mem_lock();
+	mem_block_t* block = (mem_block_t*)_platform_malloc(sizeof(mem_block_t));
+	block->p = _platform_malloc(size);
+	block->size = size;
+	block->file = file;
+	block->line = line;
+	block->prev = NULL;
+
+	if(_mem_head != NULL)
+		_mem_head->prev = block;
+	block->next = _mem_head;
+	_mem_head = block;
+	mem_unlock();
+	return block->p;
+}
+
+static inline void raw_free(void* p) {
+	mem_lock();
+	mem_block_t* block = _mem_head;	
+	while(block != NULL) {
+		if(block->p == p) // found.
+			break;
+		block = block->next;
+	}
+
+	if(block == NULL) {
+		mem_unlock();
+		return;
+	}
+	
+	if(block->next != NULL)
+		block->next->prev = block->prev;
+	if(block->prev != NULL)
+		block->prev->next = block->next;
+	
+	if(block == _mem_head)
+		_mem_head = block->next;
+
+	_platform_free(block->p);
+	_platform_free(block);
+	mem_unlock();
+}
+
+static void raw_mem_init() { 
+	_mem_head = NULL;	
+	mem_lock_init();
+}
+
+static void raw_mem_quit() { 
+	mem_lock();
+	mem_block_t* block = _mem_head;	
+	if(block != NULL) { // mem clean
+		mario_debug("[debug]memory is leaking!!!\n");
+		while(block != NULL) {
+			mario_debug(" %s, %d, 0x%x, size=%d\n", block->file, block->line, (uint32_t)block->p, block->size);
+			block = block->next;
+		}
+	}
+	else {
+		mario_debug("[debug] memory is clean.\n");
+	}
+	mem_unlock();
+	mem_lock_destroy();
+}
+
+inline void* mario_malloc_raw(uint32_t size, const char* file, uint32_t line) {
+	return raw_malloc(size, file, line);
+}
+
+#else
+
+static inline void* raw_malloc(uint32_t size) {
+	return _platform_malloc(size);
+}
+
+static inline void raw_free(void* p) {
+	return _platform_free(p);
+}
+
+static void raw_mem_init() { 
+}
+
+static void raw_mem_quit() { 
+}
+
+inline void* mario_malloc_raw(uint32_t size) {
+	return raw_malloc(size);
+}
+#endif
+
+
+inline void mario_free(void* p) {
+	if(p != NULL)
+		raw_free(p);
+}
+
+void  free_none(void* p) { }
 
 void *_realloc(void* p, uint32_t old_size, uint32_t new_size) {
-	void *np = _malloc(new_size);
-	if(p != NULL && old_size > 0) {
+	void *np = mario_malloc(new_size);
+	if(p != NULL) {
 		memcpy(np, p, old_size);
-		_free(p);
+		mario_free(p);
 	}
 	return np;
 }
 
+void mario_mem_init(void) {
+	raw_mem_init();
+}
+
+void mario_mem_quit(void) {
+	raw_mem_quit();
+}
+
 /**======debug functions======*/
 static inline void dout(const char* s) {
-	if(_out_func != NULL)
-		_out_func(s);
+	if(_platform_out != NULL)
+		_platform_out(s);
 }
 
 #define BUF_SIZE 512
 
-bool _m_debug = false;
 inline void mario_debug(const char *format, ...) {
-	if(!_m_debug)
-		return;
-
+#if MARIO_DEBUG
 	char buf[BUF_SIZE+1] = {0};
 	va_list ap;
 	va_start(ap, format);
 	vsnprintf(buf, BUF_SIZE, format, ap);
 	va_end(ap);
 	dout(buf);
+#endif
 }
 
-inline void mario_error(const char *format, ...) {
+inline void mario_printf(const char *format, ...) {
 	char buf[BUF_SIZE+1] = {0};
 	va_list ap;
 	va_start(ap, format);
@@ -74,7 +216,7 @@ static uint32_t hash_string(const char* key) {
 
 // Create a new hash map
 hash_map_t* hash_map_new(void) {
-    hash_map_t* map = (hash_map_t*)_malloc(sizeof(hash_map_t));
+    hash_map_t* map = (hash_map_t*)mario_malloc(sizeof(hash_map_t));
     hash_map_init(map);
     return map;
 }
@@ -85,7 +227,7 @@ void hash_map_init(hash_map_t* map) {
     map->size = 0;
     map->load_factor_num = 3;   // 分子：3
     map->load_factor_den = 4;   // 分母：4（3/4 = 0.75）
-    map->buckets = (hash_entry_t**)_malloc(sizeof(hash_entry_t*) * map->capacity);
+    map->buckets = (hash_entry_t**)mario_malloc(sizeof(hash_entry_t*) * map->capacity);
     uint32_t i;
     for (i = 0; i < map->capacity; i++) {
         map->buckets[i] = NULL;
@@ -98,7 +240,7 @@ void hash_map_add(hash_map_t* map, const char* key, void* value) {
     if (map->size * map->load_factor_den > map->capacity * map->load_factor_num) {
         // Resize the hash map
         uint32_t new_capacity = map->capacity * 2;
-        hash_entry_t** new_buckets = (hash_entry_t**)_malloc(sizeof(hash_entry_t*) * new_capacity);
+        hash_entry_t** new_buckets = (hash_entry_t**)mario_malloc(sizeof(hash_entry_t*) * new_capacity);
         uint32_t i;
         for (i = 0; i < new_capacity; i++) {
             new_buckets[i] = NULL;
@@ -117,7 +259,7 @@ void hash_map_add(hash_map_t* map, const char* key, void* value) {
         }
         
         // Free old buckets
-        _free(map->buckets);
+        mario_free(map->buckets);
         map->buckets = new_buckets;
         map->capacity = new_capacity;
     }
@@ -137,8 +279,8 @@ void hash_map_add(hash_map_t* map, const char* key, void* value) {
     }
     
     // Key doesn't exist, create new entry
-    entry = (hash_entry_t*)_malloc(sizeof(hash_entry_t));
-    entry->key = (char*)_malloc(strlen(key) + 1);
+    entry = (hash_entry_t*)mario_malloc(sizeof(hash_entry_t));
+    entry->key = (char*)mario_malloc(strlen(key) + 1);
     strcpy(entry->key, key);
     entry->value = value;
     entry->next = map->buckets[hash];
@@ -178,8 +320,8 @@ void* hash_map_remove(hash_map_t* map, const char* key) {
             }
             
             // Free entry
-            _free(entry->key);
-            _free(entry);
+            mario_free(entry->key);
+            mario_free(entry);
             map->size--;
             
             return value;
@@ -206,22 +348,23 @@ void hash_map_clean(hash_map_t* map, free_func_t free_key, free_func_t free_valu
             if (free_key) {
                 free_key(entry->key);
             }
-            if (free_value) {
+            if (free_value && entry->value != NULL) {
                 free_value(entry->value);
             }
-            _free(entry);
+            mario_free(entry);
             entry = next;
         }
         map->buckets[i] = NULL;
     }
+	mario_free(map->buckets);
+	map->buckets = NULL;
     map->size = 0;
 }
 
 // Free the hash map
 void hash_map_free(hash_map_t* map, free_func_t free_key, free_func_t free_value) {
     hash_map_clean(map, free_key, free_value);
-    _free(map->buckets);
-    _free(map);
+    mario_free(map);
 }
 
 // Iterate over the hash map
@@ -247,7 +390,7 @@ inline void array_init(m_array_t* array) {
 }
 
 m_array_t* array_new() {
-	m_array_t* ret = (m_array_t*)_malloc(sizeof(m_array_t));
+	m_array_t* ret = (m_array_t*)mario_malloc(sizeof(m_array_t));
 	array_init(ret);
 	return ret;
 }
@@ -281,7 +424,7 @@ inline void array_add_head(m_array_t* array, void* item) {
 }
 
 void* array_add_buf(m_array_t* array, void* s, uint32_t sz) {
-	void* item = _malloc(sz);
+	void* item = mario_malloc(sz);
 	if(s != NULL)
 		memcpy(item, s, sz);
 	array_add(array, item);
@@ -328,13 +471,13 @@ inline void array_del(m_array_t* array, uint32_t index, free_func_t fr) { // rem
 		if(fr != NULL)
 			fr(p);
 		else
-			_free(p);
+			mario_free(p);
 	}
 }
 
 inline void array_remove_all(m_array_t* array) { //remove all items bot not free them.
 	if(array->items != NULL) {
-		_free(array->items);
+		mario_free(array->items);
 		array->items = NULL;
 	}
 	array->max = array->size = 0;
@@ -342,7 +485,7 @@ inline void array_remove_all(m_array_t* array) { //remove all items bot not free
 
 inline void array_free(m_array_t* array, free_func_t fr) {
 	array_clean(array, fr);
-	_free(array);
+	mario_free(array);
 }
 
 inline void array_clean(m_array_t* array, free_func_t fr) { //remove all items and free them.
@@ -354,10 +497,10 @@ inline void array_clean(m_array_t* array, free_func_t fr) { //remove all items a
 				if(fr != NULL)
 					fr(p);
 				else
-					_free(p);
+					mario_free(p);
 			}
 		}
-		_free(array->items);
+		mario_free(array->items);
 		array->items = NULL;
 	}
 	array->max = array->size = 0;
@@ -369,7 +512,7 @@ inline void array_clean(m_array_t* array, free_func_t fr) { //remove all items a
 
 void mstr_reset(mstr_t* str) {
 	if(str->cstr == NULL) {
-		str->cstr = (char*)_malloc(mstr_BUF);
+		str->cstr = (char*)mario_malloc(mstr_BUF);
 		str->max = mstr_BUF;
 	}
 
@@ -406,7 +549,7 @@ char* mstr_cpy(mstr_t* str, const char* src) {
 }
 
 mstr_t* mstr_new(const char* s) {
-	mstr_t* ret = (mstr_t*)_malloc(sizeof(mstr_t));
+	mstr_t* ret = (mstr_t*)mario_malloc(sizeof(mstr_t));
 	ret->cstr = NULL;
 	ret->max = 0;
 	ret->len = 0;
@@ -415,8 +558,8 @@ mstr_t* mstr_new(const char* s) {
 }
 
 mstr_t* mstr_new_by_size(uint32_t sz) {
-	mstr_t* ret = (mstr_t*)_malloc(sizeof(mstr_t));
-	ret->cstr = (char*)_malloc(sz);
+	mstr_t* ret = (mstr_t*)mario_malloc(sizeof(mstr_t));
+	ret->cstr = (char*)mario_malloc(sz);
 	ret->max = sz;
 	ret->cstr[0] = 0;
 	ret->len = 0;
@@ -469,9 +612,9 @@ void mstr_free(mstr_t* str) {
 		return;
 
 	if(str->cstr != NULL) {
-		_free(str->cstr);
+		mario_free(str->cstr);
 	}
-	_free(str);
+	mario_free(str);
 }
 
 static char _mstr_result[STATIC_mstr_MAX+1];
@@ -529,7 +672,7 @@ void mstr_split(const char* str, char c, m_array_t* array) {
 	char offc = str[i];
 	while(true) {
 		if(offc == c || offc == 0) {
-			char* p = (char*)_malloc(i+1);
+			char* p = (char*)mario_malloc(i+1);
 			memcpy(p, str, i+1);
 			p[i] = 0;
 			array_add(array, p);
@@ -636,7 +779,7 @@ bool utf8_read(utf8_reader_t* reader, mstr_t* dst) {
 }
 
 utf8_t* utf8_new(const char* s) {
-	utf8_t* ret = (utf8_t*)_malloc(sizeof(utf8_t));
+	utf8_t* ret = (utf8_t*)mario_malloc(sizeof(utf8_t));
 	array_init(ret);
 	utf8_reader_t reader;
 	utf8_reader_init(&reader, s, 0);
@@ -655,7 +798,7 @@ void utf8_free(utf8_t* utf8) {
 	if(utf8 == NULL)
 		return;
 	array_clean(utf8, (free_func_t)mstr_free);
-	_free(utf8);
+	mario_free(utf8);
 }
 
 uint32_t utf8_len(utf8_t* utf8) {
@@ -1114,7 +1257,7 @@ static var_t* json_parse_factor(vm_t* vm, lex_t *l) {
 	else if(l->tk==LEX_R_FUNCTION) {
 		lex_js_chkread(l, LEX_R_FUNCTION);
 		//TODO
-		mario_error("Error: Can not parse json function item!\n");
+		mario_printf("Error: Can not parse json function item!\n");
 		return var_new(vm);
 	}
 	else if (l->tk=='[') {
@@ -1181,7 +1324,7 @@ uint32_t bc_getstrindex(bytecode_t* bc, const char* str) {
 	}
 
 	uint32_t len = (uint32_t)strlen(str);
-	char* p = (char*)_malloc(len + 1);
+	char* p = (char*)mario_malloc(len + 1);
 	memcpy(p, str, len+1);
 	array_add(&bc->mstr_table, p);
 	return sz;
@@ -1197,17 +1340,17 @@ void bc_init(bytecode_t* bc) {
 void bc_release(bytecode_t* bc) {
 	array_clean(&bc->mstr_table, NULL);
 	if(bc->code_buf != NULL)
-		_free(bc->code_buf);
+		mario_free(bc->code_buf);
 }
 
 void bc_add(bytecode_t* bc, PC ins) {
 	if(bc->cindex >= bc->buf_size) {
 		bc->buf_size = bc->cindex + BC_BUF_SIZE;
-		PC *new_buf = (PC*)_malloc(bc->buf_size*sizeof(PC));
+		PC *new_buf = (PC*)mario_malloc(bc->buf_size*sizeof(PC));
 
 		if(bc->cindex > 0 && bc->code_buf != NULL) {
 			memcpy(new_buf, bc->code_buf, bc->cindex*sizeof(PC));
-			_free(bc->code_buf);
+			mario_free(bc->code_buf);
 		}
 		bc->code_buf = new_buf;
 	}
@@ -1318,7 +1461,7 @@ static void var_cache_init(vm_t* vm) {
 	if(vm->var_cache.size == 0)
 		return;
 
-	vm->var_cache.cache = (var_t**)_malloc(vm->var_cache.size*sizeof(var_t*));
+	vm->var_cache.cache = (var_t**)mario_malloc(vm->var_cache.size*sizeof(var_t*));
     for(i=0; i<vm->var_cache.size; ++i) {
         vm->var_cache.cache[i] = NULL;
     }
@@ -1336,7 +1479,7 @@ static void var_cache_free(vm_t* vm) {
         vm->var_cache.cache[i] = NULL;
     }
     vm->var_cache.used = 0;
-	_free(vm->var_cache.cache);
+	mario_free(vm->var_cache.cache);
 }
 
 static int32_t var_cache(vm_t* vm, var_t* v) {
@@ -1366,7 +1509,7 @@ static void load_ncache_init(vm_t* vm) {
 	if(vm->load_ncache.size == 0)
 		return;
 
-	vm->load_ncache.cache = (load_ncache_t*)_malloc(vm->load_ncache.size*sizeof(load_ncache_t));
+	vm->load_ncache.cache = (load_ncache_t*)mario_malloc(vm->load_ncache.size*sizeof(load_ncache_t));
     uint32_t i;
     for(i=0; i<vm->load_ncache.size; ++i) {
         memset(&vm->load_ncache.cache[i], 0, sizeof(load_ncache_t));
@@ -1377,7 +1520,7 @@ static void load_ncache_free(vm_t* vm) {
 	if(vm->load_ncache.size == 0)
 		return;
 
-	_free(vm->load_ncache.cache);
+	mario_free(vm->load_ncache.cache);
 }
 
 static void load_ncache_invalidate(vm_t* vm, node_t* node) {
@@ -1417,7 +1560,7 @@ static void load_ncache(vm_t* vm, node_t* node, PC instr_pc) {
 			return;
 
 		code[instr_pc] = node->ncache_instr;
-		PC* pc = (PC*)_malloc(sizeof(PC));
+		PC* pc = (PC*)mario_malloc(sizeof(PC));
 		*pc = instr_pc;
 		array_add(l->old_instr_pcs, (void*)pc);
 		return;
@@ -1431,7 +1574,7 @@ static void load_ncache(vm_t* vm, node_t* node, PC instr_pc) {
 			l->old_instr_pcs = array_new();
 			l->node = node;
 
-			PC* pc = (PC*)_malloc(sizeof(PC));
+			PC* pc = (PC*)mario_malloc(sizeof(PC));
 			*pc = instr_pc;
 			array_add(l->old_instr_pcs, (void*)pc);
 			l->old_instr = code[instr_pc];
@@ -1466,12 +1609,12 @@ static var_t* var_clone(var_t* v) {
 }
 
 node_t* node_new(vm_t* vm, const char* name, var_t* var) {
-	node_t* node = (node_t*)_malloc(sizeof(node_t));
+	node_t* node = (node_t*)mario_malloc(sizeof(node_t));
 	memset(node, 0, sizeof(node_t));
 
 	node->magic = 1;
 	uint32_t len = (uint32_t)strlen(name);
-	node->name = (char*)_malloc(len+1);
+	node->name = (char*)mario_malloc(len+1);
 	memcpy(node->name, name, len+1);
 	if(var != NULL)
 		//node->var = var_ref(var_clone(var));
@@ -1499,11 +1642,11 @@ void node_free(void* p) {
 		load_ncache_invalidate(node->var->vm, node);
 	}
 
-	_free(node->name);
+	mario_free(node->name);
 	if(!var_empty(node->var)) {
 		var_unref(node->var);
 	}
-	_free(node);
+	mario_free(node);
 }
 
 static inline bool node_empty(node_t* node) {
@@ -1522,7 +1665,7 @@ inline var_t* node_replace(node_t* node, var_t* v) {
 
 inline void var_remove_all(var_t* var) {
 	/*free children*/
-	hash_map_clean(&var->children, NULL, (free_func_t)node_free);
+	hash_map_clean(&var->children, mario_free, (free_func_t)node_free);
 }
 
 static inline node_t* var_find_raw(var_t* var, const char*name) {
@@ -1726,7 +1869,7 @@ inline void var_clean(var_t* var) {
 		if(var->free_func != NULL) 
 			var->free_func(var->value);
 		else
-			_free(var->value);
+			mario_free(var->value);
 		var->value = NULL;
 	}
 
@@ -1961,7 +2104,7 @@ static inline void gc_free_free_vars(vm_t* vm, uint32_t buffer_num) {
 	var_t* v = vm->free_var_buffer;
 	while(v != NULL) {
 		var_t* vtmp = v->next;
-		_free(v);
+		mario_free(v);
 		v = vtmp;
 		vm->free_var_buffer = v;
 		vm->free_var_buffer_num--;
@@ -2021,7 +2164,7 @@ inline var_t* var_new(vm_t* vm) {
 	var_t* var = get_from_free(vm);
 	if(var == NULL) {
         uint32_t sz = sizeof(var_t);
-		var = (var_t*)_malloc(sz);
+		var = (var_t*)mario_malloc(sz);
 	}
 
 	memset(var, 0, sizeof(var_t));
@@ -2051,7 +2194,7 @@ inline var_t* var_new_array(vm_t* vm) {
 inline var_t* var_new_int(vm_t* vm, int i) {
 	var_t* var = var_new(vm);
 	var->type = V_INT;
-	var->value = _malloc(sizeof(int));
+	var->value = mario_malloc(sizeof(int));
 	*((int*)var->value) = i;
 	var_set_prototype(var, var_get_prototype(vm->builtin_vars.var_Number));
 	return var;
@@ -2066,7 +2209,7 @@ inline var_t* var_new_null(vm_t* vm) {
 inline var_t* var_new_bool(vm_t* vm, bool b) {
 	var_t* var = var_new(vm);
 	var->type = V_BOOL;
-	var->value = _malloc(sizeof(int));
+	var->value = mario_malloc(sizeof(int));
 	*((int*)var->value) = b;
 	return var;
 }
@@ -2088,7 +2231,7 @@ inline var_t* var_new_obj(vm_t* vm, var_t* proto, void*p, free_func_t fr) {
 inline var_t* var_new_float(vm_t* vm, float i) {
 	var_t* var = var_new(vm);
 	var->type = V_FLOAT;
-	var->value = _malloc(sizeof(float));
+	var->value = mario_malloc(sizeof(float));
 	*((float*)var->value) = i;
 	var_set_prototype(var, var_get_prototype(vm->builtin_vars.var_Number));
 	return var;
@@ -2098,7 +2241,7 @@ inline var_t* var_new_str(vm_t* vm, const char* s) {
 	var_t* var = var_new(vm);
 	var->type = V_STRING;
 	var->size = (uint32_t)strlen(s);
-	var->value = _malloc(var->size + 1);
+	var->value = mario_malloc(var->size + 1);
 	memcpy(var->value, s, var->size + 1);
 	var_set_prototype(var, var_get_prototype(vm->builtin_vars.var_String));
 	return var;
@@ -2110,7 +2253,7 @@ inline var_t* var_new_str2(vm_t* vm, const char* s, uint32_t len) {
 	var->size = (uint32_t)strlen(s);
 	if(var->size > len)
 		var->size = len;
-	var->value = _malloc(var->size + 1);
+	var->value = mario_malloc(var->size + 1);
 	memcpy(var->value, s, var->size + 1);
 	((char*)(var->value))[var->size] = 0;
 	var_set_prototype(var, var_get_prototype(vm->builtin_vars.var_String));
@@ -2130,9 +2273,9 @@ inline var_t* var_set_str(var_t* var, const char* v) {
 
 	var->type = V_STRING;
 	if(var->value != NULL)
-		_free(var->value);
+		mario_free(var->value);
 	uint32_t len = (uint32_t)strlen(v)+1;
-	var->value = _malloc(len);
+	var->value = mario_malloc(len);
 	memcpy(var->value, v, len);
 	return var;
 }
@@ -2155,8 +2298,8 @@ inline int var_get_int(var_t* var) {
 inline var_t* var_set_int(var_t* var, int v) {
 	var->type = V_INT;
 	if(var->value != NULL)
-		_free(var->value);
-	var->value = _malloc(sizeof(int));
+		mario_free(var->value);
+	var->value = mario_malloc(sizeof(int));
 	*((int*)var->value) = v;
 	return var;
 }
@@ -2173,8 +2316,8 @@ inline float var_get_float(var_t* var) {
 inline var_t* var_set_float(var_t* var, float v) {
 	var->type = V_FLOAT;
 	if(var->value != NULL)
-		_free(var->value);
-	var->value = _malloc(sizeof(int));
+		mario_free(var->value);
+	var->value = mario_malloc(sizeof(int));
 	*((float*)var->value) = v;
 	return var;
 }
@@ -2543,7 +2686,7 @@ static inline var_t* vm_get_scope_var(vm_t* vm) {
 }
 
 static scope_t* scope_new(var_t* var) {
-	scope_t* sc = (scope_t*)_malloc(sizeof(scope_t));
+	scope_t* sc = (scope_t*)mario_malloc(sizeof(scope_t));
 	sc->prev = NULL;
 
 	if(var != NULL)
@@ -2558,7 +2701,7 @@ static scope_t* scope_new(var_t* var) {
 }
 
 /*static scope_t* scope_clone(scope_t* src) {
-	scope_t* sc = (scope_t*)_malloc(sizeof(scope_t));
+	scope_t* sc = (scope_t*)mario_malloc(sizeof(scope_t));
 	memcpy(sc, src, sizeof(scope_t));
 	if(src->var != NULL)
 		sc->var = var_ref(src->var);
@@ -2573,7 +2716,7 @@ static void scope_free(void* p) {
 		return;
 	if(sc->var != NULL)
 		var_unref(sc->var);
-	_free(sc);
+	mario_free(sc);
 }
 /*#define vm_get_scope_var(vm, skipBlock) ({ \
 	scope_t* sc = (scope_t*)array_tail((vm)->scopes); \
@@ -2833,7 +2976,7 @@ static void var_set_father(var_t* var, var_t* father) {
 
 //for function.
 static func_t* func_new() {
-	func_t* func = (func_t*)_malloc(sizeof(func_t));
+	func_t* func = (func_t*)mario_malloc(sizeof(func_t));
 	if(func == NULL)
 		return NULL;
 	
@@ -2849,7 +2992,7 @@ static func_t* func_new() {
 static void func_free(void* p) {
 	func_t* func = (func_t*)p;
 	array_clean(&func->args, NULL);
-	_free(p);
+	mario_free(p);
 }
 
 static var_t* var_new_func(vm_t* vm, func_t* func) {
@@ -2893,19 +3036,21 @@ static void func_mark_closure(vm_t* vm, var_t* func) { //try mark function closu
 		return;
 
 	var_t* closure = var_new_array(vm);
-	int i;
 	bool mark = false;
+	int i;
 	for(i=0; i<vm->scopes->size; ++i) {
 		scope_t* sc = (scope_t*)array_get(vm->scopes, i);
 		if(sc->is_func) { //enter closure
 			mark = true;
-			var_add(func, CLOSURE, closure);
+			//var_add(func, CLOSURE, closure);
 		}
-		if(mark)
+		if(mark) {
 			var_array_add(closure, sc->var);
+		}
 	}
-	if(!mark)
+	if(!mark) {
 		var_unref(closure); //not a closure.
+	}
 }
 
 static bool func_call(vm_t* vm, var_t* obj, var_t* func_var, int arg_num) {
@@ -3133,10 +3278,10 @@ static inline void math_op(vm_t* vm, opr_code_t op, var_t* v1, var_t* v2) {
 		if(op == INSTR_PLUSEQ) {
 			v = v1;
 			char* p = (char*)v->value;
-			v->value = _malloc(s->len+1);
+			v->value = mario_malloc(s->len+1);
 			memcpy(v->value, s->cstr, s->len+1);
 			if(p != NULL)
-				_free(p);
+				mario_free(p);
 		}
 		else {
 			v = var_new_str(vm, s->cstr);
@@ -3434,7 +3579,7 @@ static bool interrupt_raw(vm_t* vm, var_t* obj, const char* func_name, var_t* fu
 		return false;
 	}
 
-	isignal_t* is = (isignal_t*)_malloc(sizeof(isignal_t));
+	isignal_t* is = (isignal_t*)mario_malloc(sizeof(isignal_t));
 	if(is == NULL) {
 		mario_debug("[debug] Interrupt signal input error!\n");
 		pthread_mutex_unlock(&vm->thread_lock);
@@ -3550,7 +3695,7 @@ void try_interrupter(vm_t* vm) {
 	var_unref(func);
 	if(sig->handle_func_name != NULL)
 		mstr_free(sig->handle_func_name);
-	_free(sig);
+	mario_free(sig);
 	vm->isignal_num--;
 	vm->interrupted = false;
 	pthread_mutex_unlock(&vm->thread_lock);
@@ -3612,7 +3757,7 @@ static void do_include(vm_t* vm, const char* jsname) {
 
 	mstr_t* js = _load_m_func(vm, jsname);
 	if(js == NULL) {
-		mario_error("Error: include file '%s' not found!\n", jsname);
+		mario_printf("Error: include file '%s' not found!\n", jsname);
 		return;
 	}
 	array_add(&vm->included, mstr_new(jsname));
@@ -3722,7 +3867,7 @@ static inline void handle_break(vm_t* vm, PC ins, opr_code_t instr, uint32_t off
 	while(true) {
 		scope_t* sc = vm_get_scope(vm);
 		if(sc == NULL) {
-			mario_error("Error: 'break' not in any loop!\n");
+			mario_printf("Error: 'break' not in any loop!\n");
 			vm_terminate(vm);
 			break;
 		}
@@ -3738,7 +3883,7 @@ static inline void handle_continue(vm_t* vm, PC ins, opr_code_t instr, uint32_t 
 	while(true) {
 		scope_t* sc = vm_get_scope(vm);
 		if(sc == NULL) {
-			mario_error("Error: 'continue' not in any loop!\n");
+			mario_printf("Error: 'continue' not in any loop!\n");
 			vm_terminate(vm);
 			break;
 		}
@@ -4035,7 +4180,7 @@ static inline void handle_asign(vm_t* vm, PC ins, opr_code_t instr, uint32_t off
 	}
 	else {
 		mario_debug("Error: Can not change a const variable: '%s'!\n", n->name);
-		vm_throw(vm, "can not change a const variable: '%s'!", n->name);
+		//vm_throw(vm, "can not change a const variable: '%s'!", n->name);
 	}
 
 	if((ins & INSTR_OPT_CACHE) == 0) {
@@ -4226,6 +4371,7 @@ static inline void handle_instof(vm_t* vm, PC ins, opr_code_t instr, uint32_t of
 static inline void handle_typeof(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
 	var_t* var = vm_pop2(vm);
 	var_t* v = var_new_str(vm, get_typeof(var));
+	var_unref(var);
 	vm_push(vm, v);
 }
 
@@ -4240,7 +4386,7 @@ static inline void handle_throw(vm_t* vm, PC ins, opr_code_t instr, uint32_t off
 	while(true) {
 		scope_t* sc = vm_get_scope(vm);
 		if(sc == NULL) {
-			mario_error("Error: 'throw' not in any try...catch!\n");
+			mario_printf("Error: 'throw' not in any try...catch!\n");
 			vm_terminate(vm);
 			break;
 		}
@@ -4481,20 +4627,20 @@ void vm_close(vm_t* vm) {
 	vm->stack_top = 0;
 
 	gc(vm, true);
-	_free(vm);
+	mario_free(vm);
 }	
 
 /**======native extends functions======*/
 
 void vm_reg_init(vm_t* vm, void (*func)(void*), void* data) {
-	native_init_t* it = (native_init_t*)_malloc(sizeof(native_init_t));
+	native_init_t* it = (native_init_t*)mario_malloc(sizeof(native_init_t));
 	it->func = func;
 	it->data = data;
 	array_add(&vm->init_natives, it);
 }
 
 void vm_reg_close(vm_t* vm, void (*func)(void*), void* data) {
-	native_init_t* it = (native_init_t*)_malloc(sizeof(native_init_t));
+	native_init_t* it = (native_init_t*)mario_malloc(sizeof(native_init_t));
 	it->func = func;
 	it->data = data;
 	array_add(&vm->close_natives, it);
@@ -4675,7 +4821,7 @@ vm_t* vm_from(vm_t* vm) {
 */
 
 vm_t* vm_new(compiler_func_t compiler, uint32_t var_cache_size, uint32_t load_ncache_size) {
-	vm_t* vm = (vm_t*)_malloc(sizeof(vm_t));
+	vm_t* vm = (vm_t*)mario_malloc(sizeof(vm_t));
 	memset(vm, 0, sizeof(vm_t));
 
 	vm->compiler = compiler;
@@ -4689,8 +4835,8 @@ vm_t* vm_new(compiler_func_t compiler, uint32_t var_cache_size, uint32_t load_nc
 	vm->stack_top = 0;
 
 	bc_init(&vm->bc);
-	vm->this_strIndex = bc_getstrindex(&vm->bc, THIS);
 
+	vm->this_strIndex = bc_getstrindex(&vm->bc, THIS);
 	vm->scopes = array_new();
 
 	var_cache_init(vm);

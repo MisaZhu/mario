@@ -242,7 +242,7 @@ void mario_error_pos(lex_t* l, int pos) {
 	int col;
 
 	lex_get_pos(l, &line, &col, pos);
-	mario_error("(line: %d, col: %d)\n",  line, col);
+	mario_printf("(line: %d, col: %d)\n",  line, col);
 }
 
 bool lex_chkread(lex_t* lex, uint32_t expected_tk);
@@ -988,7 +988,7 @@ bool statement(lex_t* l, bytecode_t* bc) {
 		pop = false;
 	}
 	else {
-		mario_error("Error: don't understand '%s' ", l->tk_str->cstr);
+		mario_printf("Error: don't understand '%s' ", l->tk_str->cstr);
 		mario_error_pos(l, -1);
 		return false;
 	}
@@ -1005,7 +1005,7 @@ bool compile(bytecode_t *bc, const char* input) {
 
 	while(lex.tk) {
 		if(!statement(&lex, bc)) {
-			mario_error("Error: compile failed! '%s' ", lex.tk_str->cstr);
+			mario_printf("Error: compile failed! '%s' ", lex.tk_str->cstr);
 			mario_error_pos(&lex, -1);
 			lex_release(&lex);
 			return false;

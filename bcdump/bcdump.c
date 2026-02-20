@@ -86,6 +86,7 @@ static const char* inmstr_str(opr_code_t ins) {
 		case  INSTR_THROW				: return "THROW";
 		case  INSTR_CATCH				: return "CATCH";
 		case  INSTR_INSTOF			: return "INSTOF";
+		case  INSTR_TYPEOF			: return "TYPEOF";
 		case  INSTR_STRICT			: return "STRICT";
 		case  INSTR_INCLUDE			: return "INCLUDE";
 		default									: return "";

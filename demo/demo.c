@@ -23,7 +23,7 @@ char* load_script(const char* fname) {
 	struct stat st;
 	fstat(fd, &st);
 
-	char* s = (char*)_malloc(st.st_size+1);
+	char* s = (char*)mario_malloc(st.st_size+1);
 	if(s != NULL) {
 		read(fd, s, st.st_size);
 		s[st.st_size] = 0;
@@ -49,7 +49,7 @@ static var_t* native_print(vm_t* vm, var_t* env, void* data) {
 	}
 	mstr_free(str);
 	mstr_add(ret, '\n');
-	_out_func(ret->cstr);
+	_platform_out(ret->cstr);
 	mstr_free(ret);
 	return NULL;
 }
@@ -70,9 +70,6 @@ static int doargs(int argc, char* argv[]) {
 		case 'a':
 			_dump = true;
 			break;
-		case 'd':
-			_m_debug = true;
-			break;
 		case '?':
 			return -1;
 		default:
@@ -89,15 +86,17 @@ int main(int argc, char** argv) {
 	const char* fname = "";
 
 	_dump = false;
-	_free = free;
-	_malloc = malloc;
-	_out_func = out;
+	_platform_free = free;
+	_platform_malloc = malloc;
+	_platform_out = out;
 
 	int argind = doargs(argc, argv);
 	if(argind < 0 || argind >= argc) {
-		mario_error("Usage: demo (-d/-a) [source_file]!\n");
+		mario_printf("Usage: demo (-d/-a) [source_file]!\n");
 		return 1;
 	}
+
+	mario_mem_init();
 
 	fname = argv[argind];
 	vm_t* vm = vm_new(compile, VAR_CACHE_MAX_DEF, LOAD_NCACHE_MAX_DEF);
@@ -106,18 +105,18 @@ int main(int argc, char** argv) {
 
 	char* s = load_script(fname);
 	if(s == NULL) {
-		mario_error("Load script failed!\n");
+		mario_printf("Load script failed!\n");
 		return 1;
 	}
 
 	bool res = vm_load(vm, s);
-	_free(s);
+	mario_free(s);
 
 	if(res) {
 		if(_dump) {
 			mstr_t* dump = bc_dump(&vm->bc);
 			if(dump != NULL) {
-				_out_func(dump->cstr);
+				_platform_out(dump->cstr);
 				mstr_free(dump);
 			}
 		}
@@ -125,5 +124,6 @@ int main(int argc, char** argv) {
 			vm_run(vm);
 	}
 	vm_close(vm);
+	mario_mem_quit();
 	return 0;
 }
