@@ -1740,42 +1740,42 @@ inline void var_clean(var_t* var) {
 static inline void add_to_free(var_t* var) {
 	vm_t* vm = var->vm;
 	var->status = V_ST_FREE;
-	if(vm->free_vars != NULL)
-		vm->free_vars->prev = var;
-	var->next = vm->free_vars;
-	vm->free_vars = var;
-	vm->free_vars_num++;
+	if(vm->free_var_buffer != NULL)
+		vm->free_var_buffer->prev = var;
+	var->next = vm->free_var_buffer;
+	vm->free_var_buffer = var;
+	vm->free_var_buffer_num++;
 }
 
 static void gc(vm_t* vm, bool force);
 static inline void add_to_gc(var_t* var) {
 	vm_t* vm = var->vm;
-	var->prev = vm->gc_vars_tail;
-	if(vm->gc_vars_tail != NULL)
-		vm->gc_vars_tail->next = var;
+	var->prev = vm->gc.gc_vars_tail;
+	if(vm->gc.gc_vars_tail != NULL)
+		vm->gc.gc_vars_tail->next = var;
 	else {
-		vm->gc_vars = var;
+		vm->gc.gc_vars = var;
 	}
 	var->next = NULL;
-	vm->gc_vars_tail = var;
+	vm->gc.gc_vars_tail = var;
 	var->status = V_ST_GC;
-	vm->gc_vars_num++;
+	vm->gc.gc_vars_num++;
 
-	if(vm->gc_vars_num > GC_TRIG_VAR_NUM_DEF)
+	if(vm->gc.gc_vars_num > GC_TRIG_VAR_NUM_DEF)
 		gc(vm, false);
 }
 
 static inline var_t* get_from_free(vm_t* vm) {
-	if(vm->is_doing_gc)
+	if(vm->gc.is_doing_gc)
 		return NULL;
 
-	var_t* var = vm->free_vars;
+	var_t* var = vm->free_var_buffer;
 	if(var != NULL) {
-		vm->free_vars = var->next;
-		if(vm->free_vars != NULL)
-			vm->free_vars->prev = NULL;
-		if(vm->free_vars_num > 0)
-			vm->free_vars_num--;
+		vm->free_var_buffer = var->next;
+		if(vm->free_var_buffer != NULL)
+			vm->free_var_buffer->prev = NULL;
+		if(vm->free_var_buffer_num > 0)
+			vm->free_var_buffer_num--;
 	}
 	return var;
 }
@@ -1785,16 +1785,16 @@ static inline void remove_from_gc(var_t* var) {
 	if(var->prev != NULL)
 		var->prev->next = var->next;
 	else
-		vm->gc_vars = var->next;
+		vm->gc.gc_vars = var->next;
 
 	if(var->next != NULL)
 		var->next->prev = var->prev;
 	else
-		vm->gc_vars_tail = var->prev;
+		vm->gc.gc_vars_tail = var->prev;
 
 	var->prev = var->next = NULL;
-	if(var->vm->gc_vars_num > 0)
-		var->vm->gc_vars_num--;
+	if(var->vm->gc.gc_vars_num > 0)
+		var->vm->gc.gc_vars_num--;
 }
 
 static inline void gc_mark(var_t* var, bool mark) {
@@ -1869,10 +1869,10 @@ static inline void var_free(void* p) {
 	var->vm = vm;
 
 	if(status == V_ST_GC) { //if in gc_vars list
-		if(vm->is_doing_gc) { // if is doing gc, change status to GC_FREE for moving to free_vars list later.
+		if(vm->gc.is_doing_gc) { // if is doing gc, change status to GC_FREE for moving to free_var_buffer list later.
 			var->status = V_ST_GC_FREE;
 		}
-		else { //not doing gc, move to free_vars list immediately.
+		else { //not doing gc, move to free_var_buffer list immediately.
 			remove_from_gc(var);
 			add_to_free(var);
 		}
@@ -1922,13 +1922,13 @@ static inline void gc_vars(vm_t* vm) {
 	gc_mark_cache(vm, true); //mark all cached vars
 
 	mario_debug("free all marked var\n");
-	var_t* v = vm->gc_vars;
+	var_t* v = vm->gc.gc_vars;
 	//first step: free unmarked vars
 	while(v != NULL) {
 		var_t* next = v->next;
 		if(v->status == V_ST_GC && v->gc_marked == false) {
-			if(v == vm->gc_vars)
-				vm->gc_vars = next;
+			if(v == vm->gc.gc_vars)
+			vm->gc.gc_vars = next;
 			var_free(v);
 		}
 		v = next;
@@ -1945,7 +1945,7 @@ static inline void gc_vars(vm_t* vm) {
 
 	mario_debug("gc recycle free vars\n");
 	//second step: move freed var to free_var_list for reusing.
-	v = vm->gc_vars;
+	v = vm->gc.gc_vars;
 	while(v != NULL) {
 		var_t* next = v->next;
 		if(v->status == V_ST_GC_FREE) {
@@ -1958,30 +1958,30 @@ static inline void gc_vars(vm_t* vm) {
 }
 
 static inline void gc_free_free_vars(vm_t* vm, uint32_t buffer_num) {
-	var_t* v = vm->free_vars;
+	var_t* v = vm->free_var_buffer;
 	while(v != NULL) {
 		var_t* vtmp = v->next;
 		_free(v);
 		v = vtmp;
-		vm->free_vars = v;
-		vm->free_vars_num--;
-		if(vm->free_vars_num <= buffer_num)
+		vm->free_var_buffer = v;
+		vm->free_var_buffer_num--;
+		if(vm->free_var_buffer_num <= buffer_num)
 			break;
 	}
 }
 
 static inline void gc(vm_t* vm, bool force) {
-	if(vm->is_doing_gc)
+	if(vm->gc.is_doing_gc)
 		return;
-	if(!force && vm->gc_vars_num < vm->gc_trig_var_num)
+	if(!force && vm->gc.gc_vars_num < vm->gc.gc_trig_var_num)
 		return;
 	mario_debug("[debug] do gc ......\n");
-	vm->is_doing_gc = true;
+	vm->gc.is_doing_gc = true;
 	mario_debug("marking ......\n");
 	gc_vars(vm);
 	mario_debug("freeing ......");
-	gc_free_free_vars(vm, force ? 0:vm->free_var_buffer_num);
-	vm->is_doing_gc = false;
+	gc_free_free_vars(vm, force ? 0:vm->gc.free_var_buffer_num);
+	vm->gc.is_doing_gc = false;
 	mario_debug(" gc done.\n");
 }
 
@@ -2039,7 +2039,7 @@ inline var_t* var_new_block(vm_t* vm) {
 }
 
 inline var_t* var_new_array(vm_t* vm) {
-	var_t* var = var_new_obj(vm, var_get_prototype(vm->var_Array), NULL, NULL);
+	var_t* var = var_new_obj(vm, var_get_prototype(vm->builtin_vars.var_Array), NULL, NULL);
 	var->is_array = 1;
 	var_t* members = var_new_obj_no_proto(vm, NULL, NULL);
 	node_t* n = var_add(var, "_ARRAY_", members);
@@ -2053,7 +2053,7 @@ inline var_t* var_new_int(vm_t* vm, int i) {
 	var->type = V_INT;
 	var->value = _malloc(sizeof(int));
 	*((int*)var->value) = i;
-	var_set_prototype(var, var_get_prototype(vm->var_Number));
+	var_set_prototype(var, var_get_prototype(vm->builtin_vars.var_Number));
 	return var;
 }
 
@@ -2090,7 +2090,7 @@ inline var_t* var_new_float(vm_t* vm, float i) {
 	var->type = V_FLOAT;
 	var->value = _malloc(sizeof(float));
 	*((float*)var->value) = i;
-	var_set_prototype(var, var_get_prototype(vm->var_Number));
+	var_set_prototype(var, var_get_prototype(vm->builtin_vars.var_Number));
 	return var;
 }
 
@@ -2100,7 +2100,7 @@ inline var_t* var_new_str(vm_t* vm, const char* s) {
 	var->size = (uint32_t)strlen(s);
 	var->value = _malloc(var->size + 1);
 	memcpy(var->value, s, var->size + 1);
-	var_set_prototype(var, var_get_prototype(vm->var_String));
+	var_set_prototype(var, var_get_prototype(vm->builtin_vars.var_String));
 	return var;
 }
 
@@ -2113,7 +2113,7 @@ inline var_t* var_new_str2(vm_t* vm, const char* s, uint32_t len) {
 	var->value = _malloc(var->size + 1);
 	memcpy(var->value, s, var->size + 1);
 	((char*)(var->value))[var->size] = 0;
-	var_set_prototype(var, var_get_prototype(vm->var_String));
+	var_set_prototype(var, var_get_prototype(vm->builtin_vars.var_String));
 	return var;
 }
 
@@ -2733,7 +2733,7 @@ void vm_throw(vm_t* vm, const char *format, ...) {
 	vsnprintf(message, BUF_SIZE, format, ap);
 	va_end(ap);
 
-	var_t* err = var_new_obj(vm, vm->var_Error, NULL, NULL);
+	var_t* err = var_new_obj(vm, vm->builtin_vars.var_Error, NULL, NULL);
 	var_t* msg = var_find_member_var(err, "message");
 	if(msg != NULL)
 		var_set_str(msg, message);
@@ -2858,7 +2858,7 @@ static var_t* var_new_func(vm_t* vm, func_t* func) {
 	var->free_func = func_free;
 	var->value = func;
 
-	var_t* proto = var_get_prototype(vm->var_Object);
+	var_t* proto = var_get_prototype(vm->builtin_vars.var_Object);
 	if(proto == NULL)
 		proto = var_new_obj_no_proto(vm, NULL, NULL);
 	var_set_prototype(var, proto);
@@ -3160,9 +3160,9 @@ static inline void compare(vm_t* vm, opr_code_t op, var_t* v1, var_t* v2) {
             break;
         }
         if(i)
-            vm_push(vm, vm->var_true);
+            vm_push(vm, vm->builtin_vars.var_true);
         else
-            vm_push(vm, vm->var_false);
+            vm_push(vm, vm->builtin_vars.var_false);
         return;
     }
     
@@ -3196,9 +3196,9 @@ static inline void compare(vm_t* vm, opr_code_t op, var_t* v1, var_t* v2) {
 				break; 
 		}
 		if(i)
-			vm_push(vm, vm->var_true);
+			vm_push(vm, vm->builtin_vars.var_true);
 		else
-			vm_push(vm, vm->var_false);
+			vm_push(vm, vm->builtin_vars.var_false);
 		return;
 	}
 
@@ -3276,9 +3276,9 @@ static inline void compare(vm_t* vm, opr_code_t op, var_t* v1, var_t* v2) {
 	}
 
 	if(i)
-		vm_push(vm, vm->var_true);
+		vm_push(vm, vm->builtin_vars.var_true);
 	else
-		vm_push(vm, vm->var_false);
+		vm_push(vm, vm->builtin_vars.var_false);
 }
 
 void do_get(vm_t* vm, var_t* v, const char* name) {
@@ -3401,7 +3401,7 @@ var_t* call_m_func(vm_t* vm, var_t* obj, var_t* func, var_t* args) {
 		arg_num = 0;
 	}
 
-	while(vm->is_doing_gc);
+	while(vm->gc.is_doing_gc);
 	func_call(vm, obj, func, arg_num);
 	return vm_pop2(vm);
 }
@@ -3765,15 +3765,15 @@ static inline void handle_ncache(vm_t* vm, PC ins, opr_code_t instr, uint32_t of
 }
 
 static inline void handle_true(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
-	vm_push(vm, vm->var_true);
+	vm_push(vm, vm->builtin_vars.var_true);
 }
 
 static inline void handle_false(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
-	vm_push(vm, vm->var_false);
+	vm_push(vm, vm->builtin_vars.var_false);
 }
 
 static inline void handle_null(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
-	vm_push(vm, vm->var_null);
+	vm_push(vm, vm->builtin_vars.var_null);
 }
 
 static inline void handle_undef(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
@@ -3806,7 +3806,7 @@ static inline void handle_not(vm_t* vm, PC ins, opr_code_t instr, uint32_t offse
 	if(v->type == V_UNDEF || *(int*)v->value == 0)
 		i = true;
 	var_unref(v);
-	vm_push(vm, i ? vm->var_true : vm->var_false);
+	vm_push(vm, i ? vm->builtin_vars.var_true : vm->builtin_vars.var_false);
 }
 
 static inline void handle_logic(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
@@ -3820,7 +3820,7 @@ static inline void handle_logic(vm_t* vm, PC ins, opr_code_t instr, uint32_t off
 		r = (i1 != 0) && (i2 != 0);
 	else
 		r = (i1 != 0) || (i2 != 0);
-	vm_push(vm, r ? vm->var_true : vm->var_false);
+	vm_push(vm, r ? vm->builtin_vars.var_true : vm->builtin_vars.var_false);
 
 	var_unref(v1);
 	var_unref(v2);
@@ -4156,7 +4156,7 @@ static inline void handle_func(vm_t* vm, PC ins, opr_code_t instr, uint32_t offs
 static inline void handle_obj(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
 	var_t* obj;
 	if(instr == INSTR_OBJ) {
-		obj = var_new_obj(vm, var_get_prototype(vm->var_Object), NULL, NULL);
+		obj = var_new_obj(vm, var_get_prototype(vm->builtin_vars.var_Object), NULL, NULL);
 	}
 	else
 		obj = var_new_array(vm);
@@ -4235,19 +4235,6 @@ static inline void handle_include(vm_t* vm, PC ins, opr_code_t instr, uint32_t o
 	var_unref(v);
 }
 
-static inline void handle_strict_mode(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
-	// Set strict mode for current scope
-	scope_t* sc = vm_get_scope(vm);
-	if(sc != NULL) {
-		sc->is_strict = true;
-	}
-	else {
-		// If no current scope, create one with strict mode enabled
-		scope_t* new_sc = scope_new(NULL);
-		new_sc->is_strict = true;
-		vm_push_scope(vm, new_sc);
-	}
-}
 
 static inline void handle_throw(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
 	while(true) {
@@ -4471,9 +4458,9 @@ void vm_close(vm_t* vm) {
 		it->func(it->data);
 	}
 	array_clean(&vm->close_natives, NULL);
-	var_unref(vm->var_true);
-	var_unref(vm->var_false);
-	var_unref(vm->var_null);
+	var_unref(vm->builtin_vars.var_true);
+	var_unref(vm->builtin_vars.var_false);
+	var_unref(vm->builtin_vars.var_null);
 
 
 	#ifdef MARIO_THREAD
@@ -4658,8 +4645,8 @@ const char* get_func_arg_str(var_t* env, uint32_t index) {
 
 vm_t* vm_from(vm_t* vm) {
 	vm_t* ret = vm_new(vm->compiler, vm->var_cache.size, vm->load_ncache.size);
-	ret->gc_trig_var_num = vm->gc_trig_var_num;
-	ret->free_var_buffer_num = vm->free_var_buffer_num;
+	ret->gc.gc_trig_var_num = vm->gc.gc_trig_var_num;
+	ret->gc.free_var_buffer_num = vm->gc.free_var_buffer_num;
   	vm_init(ret, vm->on_init, vm->on_close);
 	return ret;
 }
@@ -4697,9 +4684,8 @@ vm_t* vm_new(compiler_func_t compiler, uint32_t var_cache_size, uint32_t load_nc
 
 	vm->terminated = false;
 	vm->pc = 0;
-	vm->this_strIndex = 0;
-	vm->gc_trig_var_num = GC_TRIG_VAR_NUM_DEF;
-	vm->free_var_buffer_num = FREE_VAR_BUFFER_NUM_DEF;
+	vm->gc.gc_trig_var_num = GC_TRIG_VAR_NUM_DEF;
+	vm->gc.free_var_buffer_num = FREE_VAR_BUFFER_NUM_DEF;
 	vm->stack_top = 0;
 
 	bc_init(&vm->bc);
@@ -4727,15 +4713,15 @@ vm_t* vm_new(compiler_func_t compiler, uint32_t var_cache_size, uint32_t load_nc
 	vm_push_scope(vm, scope_new(vm->root));
 
 	var_ref(vm->root);
-	vm->var_true = var_new_bool(vm, true);
-	//var_add(vm->root, "", vm->var_true);
-	var_ref(vm->var_true);
-	vm->var_false = var_new_bool(vm, false);
-	//var_add(vm->root, "", vm->var_false);
-	var_ref(vm->var_false);
-	vm->var_null = var_new_null(vm);
-	//var_add(vm->root, "", vm->var_null);
-	var_ref(vm->var_null);
+	vm->builtin_vars.var_true = var_new_bool(vm, true);
+	//var_add(vm->root, "", vm->builtin_vars.var_true);
+	var_ref(vm->builtin_vars.var_true);
+	vm->builtin_vars.var_false = var_new_bool(vm, false);
+	//var_add(vm->root, "", vm->builtin_vars.var_false);
+	var_ref(vm->builtin_vars.var_false);
+	vm->builtin_vars.var_null = var_new_null(vm);
+	//var_add(vm->root, "", vm->builtin_vars.var_null);
+	var_ref(vm->builtin_vars.var_null);
 
 	//vm_reg_static(vm, NULL, "debug()", native_debug, NULL);
 	return vm;

@@ -438,7 +438,6 @@ typedef struct st_ic_entry {
     node_t* node;
 } load_ncache_t;
 
-
 typedef bool (*compiler_func_t)(bytecode_t *bc, const char* input);
 
 #define GC_TRIG_VAR_NUM_DEF 128
@@ -488,25 +487,29 @@ typedef struct st_vm {
 	} load_ncache;
 
 	uint32_t this_strIndex;
-	var_t* var_Object;
-	var_t* var_String;
-	var_t* var_Number;
-	var_t* var_Error;
-	var_t* var_Array;
-	var_t* var_true;
-	var_t* var_false;
-	var_t* var_null;
+	struct {
+		var_t* var_Object;
+		var_t* var_String;
+		var_t* var_Number;
+		var_t* var_Error;
+		var_t* var_Array;
+		var_t* var_true;
+		var_t* var_false;
+		var_t* var_null;
+	} builtin_vars;
 
-	//for gc
-	bool is_doing_gc;
-	uint32_t gc_trig_var_num; //trigger gc when var num reach this value.
-	uint32_t free_var_buffer_num; // number of free var buffer.
-	var_t* gc_vars;
-	var_t* gc_vars_tail;
-	uint32_t gc_vars_num;
+	// GC structure
+	struct {
+		bool is_doing_gc;
+		uint32_t gc_trig_var_num; //trigger gc when var num reach this value.
+		uint32_t free_var_buffer_num; // number of free var buffer.
+		var_t* gc_vars;
+		var_t* gc_vars_tail;
+		uint32_t gc_vars_num;
+	} gc;
 
-	var_t* free_vars;
-	uint32_t free_vars_num;
+	var_t* free_var_buffer;
+	uint32_t free_var_buffer_num;
 } vm_t;
 
 typedef mstr_t* (*load_m_func_t)(struct st_vm *, const char* jsname);
