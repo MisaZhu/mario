@@ -439,11 +439,15 @@ typedef struct st_ic_entry {
 } load_ncache_t;
 
 
+typedef bool (*compiler_func_t)(bytecode_t *bc, const char* input);
+
+#define VAR_CACHE_MAX_DEF   128
+#define LOAD_NCACHE_MAX_DEF 128
 #define VM_STACK_MAX    32
 
 typedef struct st_vm {
 	bytecode_t bc;
-	bool (*compiler)(bytecode_t *bc, const char* input);
+	compiler_func_t compiler;
 
 	m_array_t *scopes;
 	void* stack[VM_STACK_MAX];
@@ -468,7 +472,6 @@ typedef struct st_vm {
 	bool interrupted;
 	#endif
 
-	#ifdef MARIO_CACHE
 	struct {
 		var_t** cache;
 		uint32_t size;
@@ -479,7 +482,6 @@ typedef struct st_vm {
 		load_ncache_t* cache;
 		uint32_t size;
 	} load_ncache;
-	#endif
 
 	uint32_t this_strIndex;
 	var_t* var_Object;
@@ -566,7 +568,8 @@ void var_to_str(var_t*, mstr_t*);
 
 void vm_push(vm_t* vm, var_t* var);
 void vm_push_node(vm_t* vm, node_t* node);
-vm_t* vm_new(bool (*compiler)(bytecode_t *bc, const char* input));
+
+vm_t* vm_new(compiler_func_t compiler, uint32_t var_cache_size, uint32_t load_ncache_size);
 node_t* vm_load_node(vm_t* vm, const char* name, bool create);
 
 void vm_init(vm_t* vm,

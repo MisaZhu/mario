@@ -100,7 +100,7 @@ int main(int argc, char** argv) {
 	}
 
 	fname = argv[argind];
-	vm_t* vm = vm_new(compile);
+	vm_t* vm = vm_new(compile, VAR_CACHE_MAX_DEF, LOAD_NCACHE_MAX_DEF);
 	vm_init(vm, NULL, NULL);
 	vm_reg_static(vm, NULL, "print()", native_print, NULL);
 
