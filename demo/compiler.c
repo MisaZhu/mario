@@ -523,7 +523,7 @@ bool factor(lex_t* l, bytecode_t* bc, bool member) {
 				bc_gen_str(bc, INSTR_GET, name->cstr);	
 			}
 			else if (l->tk == '.') {
-				bc_gen_str(bc, INSTR_LOADO, name->cstr);	
+				bc_gen_str(bc, INSTR_LOAD, name->cstr);	
 			}
 			else {
 				bc_gen_str(bc, INSTR_LOAD, name->cstr);	
