@@ -441,8 +441,12 @@ typedef struct st_ic_entry {
 
 typedef bool (*compiler_func_t)(bytecode_t *bc, const char* input);
 
+#define GC_TRIG_VAR_NUM_DEF 128
+#define FREE_VAR_BUFFER_NUM_DEF 128
+
 #define VAR_CACHE_MAX_DEF   128
 #define LOAD_NCACHE_MAX_DEF 128
+
 #define VM_STACK_MAX    32
 
 typedef struct st_vm {
@@ -495,11 +499,12 @@ typedef struct st_vm {
 
 	//for gc
 	bool is_doing_gc;
-	uint32_t gc_buffer_size;
-	uint32_t gc_free_buffer_size;
+	uint32_t gc_trig_var_num; //trigger gc when var num reach this value.
+	uint32_t free_var_buffer_num; // number of free var buffer.
 	var_t* gc_vars;
 	var_t* gc_vars_tail;
 	uint32_t gc_vars_num;
+
 	var_t* free_vars;
 	uint32_t free_vars_num;
 } vm_t;

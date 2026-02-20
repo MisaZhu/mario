@@ -1747,7 +1747,6 @@ static inline void add_to_free(var_t* var) {
 	vm->free_vars_num++;
 }
 
-#define GC_BUFFER 128
 static void gc(vm_t* vm, bool force);
 static inline void add_to_gc(var_t* var) {
 	vm_t* vm = var->vm;
@@ -1762,7 +1761,7 @@ static inline void add_to_gc(var_t* var) {
 	var->status = V_ST_GC;
 	vm->gc_vars_num++;
 
-	if(vm->gc_vars_num > GC_BUFFER)
+	if(vm->gc_vars_num > GC_TRIG_VAR_NUM_DEF)
 		gc(vm, false);
 }
 
@@ -1958,7 +1957,7 @@ static inline void gc_vars(vm_t* vm) {
 	mario_debug("gc_var done\n");
 }
 
-static inline void gc_free_vars(vm_t* vm, uint32_t buffer_size) {
+static inline void gc_free_free_vars(vm_t* vm, uint32_t buffer_num) {
 	var_t* v = vm->free_vars;
 	while(v != NULL) {
 		var_t* vtmp = v->next;
@@ -1966,7 +1965,7 @@ static inline void gc_free_vars(vm_t* vm, uint32_t buffer_size) {
 		v = vtmp;
 		vm->free_vars = v;
 		vm->free_vars_num--;
-		if(vm->free_vars_num <= buffer_size)
+		if(vm->free_vars_num <= buffer_num)
 			break;
 	}
 }
@@ -1974,14 +1973,14 @@ static inline void gc_free_vars(vm_t* vm, uint32_t buffer_size) {
 static inline void gc(vm_t* vm, bool force) {
 	if(vm->is_doing_gc)
 		return;
-	if(!force && vm->gc_vars_num < vm->gc_buffer_size)
+	if(!force && vm->gc_vars_num < vm->gc_trig_var_num)
 		return;
 	mario_debug("[debug] do gc ......\n");
 	vm->is_doing_gc = true;
 	mario_debug("marking ......\n");
 	gc_vars(vm);
 	mario_debug("freeing ......");
-	gc_free_vars(vm, force ? 0:vm->gc_free_buffer_size);
+	gc_free_free_vars(vm, force ? 0:vm->free_var_buffer_num);
 	vm->is_doing_gc = false;
 	mario_debug(" gc done.\n");
 }
@@ -4659,8 +4658,8 @@ const char* get_func_arg_str(var_t* env, uint32_t index) {
 
 vm_t* vm_from(vm_t* vm) {
 	vm_t* ret = vm_new(vm->compiler, vm->var_cache.size, vm->load_ncache.size);
-	ret->gc_buffer_size = vm->gc_buffer_size;
-	ret->gc_free_buffer_size = vm->gc_free_buffer_size;
+	ret->gc_trig_var_num = vm->gc_trig_var_num;
+	ret->free_var_buffer_num = vm->free_var_buffer_num;
   	vm_init(ret, vm->on_init, vm->on_close);
 	return ret;
 }
@@ -4688,7 +4687,6 @@ vm_t* vm_from(vm_t* vm) {
 }
 */
 
-#define GC_FREE_BUFFER 128
 vm_t* vm_new(compiler_func_t compiler, uint32_t var_cache_size, uint32_t load_ncache_size) {
 	vm_t* vm = (vm_t*)_malloc(sizeof(vm_t));
 	memset(vm, 0, sizeof(vm_t));
@@ -4700,8 +4698,8 @@ vm_t* vm_new(compiler_func_t compiler, uint32_t var_cache_size, uint32_t load_nc
 	vm->terminated = false;
 	vm->pc = 0;
 	vm->this_strIndex = 0;
-	vm->gc_buffer_size = GC_BUFFER;
-	vm->gc_free_buffer_size = GC_FREE_BUFFER;
+	vm->gc_trig_var_num = GC_TRIG_VAR_NUM_DEF;
+	vm->free_var_buffer_num = FREE_VAR_BUFFER_NUM_DEF;
 	vm->stack_top = 0;
 
 	bc_init(&vm->bc);
