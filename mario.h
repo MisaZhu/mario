@@ -438,10 +438,6 @@ typedef struct st_ic_entry {
     node_t* node;
 } load_ncache_t;
 
-#ifdef MARIO_CACHE
-#define VAR_CACHE_MAX   128
-#define LOAD_NCACHE_MAX 128
-#endif
 
 #define VM_STACK_MAX    32
 
@@ -473,9 +469,16 @@ typedef struct st_vm {
 	#endif
 
 	#ifdef MARIO_CACHE
-	var_t* var_cache[VAR_CACHE_MAX];
-	uint32_t var_cache_used;
-	load_ncache_t load_ncache[LOAD_NCACHE_MAX];
+	struct {
+		var_t** cache;
+		uint32_t size;
+		uint32_t used;
+	} var_cache;
+
+	struct {
+		load_ncache_t* cache;
+		uint32_t size;
+	} load_ncache;
 	#endif
 
 	uint32_t this_strIndex;

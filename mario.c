@@ -1315,30 +1315,37 @@ PC bc_add_instr(bytecode_t* bc, PC anchor, opr_code_t op, PC target) {
 
 #ifdef MARIO_CACHE
 
+#define VAR_CACHE_MAX_DEF   128
+#define LOAD_NCACHE_MAX_DEF 128
+
 static void var_cache_init(vm_t* vm) {
     uint32_t i;
-    for(i=0; i<vm->var_cache_used; ++i) {
-        vm->var_cache[i] = NULL;
+	if(vm->var_cache.size == 0)
+		vm->var_cache.size = VAR_CACHE_MAX_DEF;
+	vm->var_cache.cache = (var_t**)_malloc(vm->var_cache.size*sizeof(var_t*));
+    for(i=0; i<vm->var_cache.size; ++i) {
+        vm->var_cache.cache[i] = NULL;
     }
-    vm->var_cache_used = 0;
+    vm->var_cache.used = 0;
 }
 
 static void var_cache_free(vm_t* vm) {
     uint32_t i;
-    for(i=0; i<vm->var_cache_used; ++i) {
-        var_t* v = vm->var_cache[i];
+    for(i=0; i<vm->var_cache.used; ++i) {
+        var_t* v = vm->var_cache.cache[i];
         var_unref(v);
-        vm->var_cache[i] = NULL;
+        vm->var_cache.cache[i] = NULL;
     }
-    vm->var_cache_used = 0;
+    vm->var_cache.used = 0;
+	_free(vm->var_cache.cache);
 }
 
 static int32_t var_cache(vm_t* vm, var_t* v) {
-    if(vm->var_cache_used >= VAR_CACHE_MAX)
+    if(vm->var_cache.used >= VAR_CACHE_MAX_DEF)
         return -1;
-    vm->var_cache[vm->var_cache_used] = var_ref(v);
-    vm->var_cache_used++;
-    return vm->var_cache_used-1;
+    vm->var_cache.cache[vm->var_cache.used] = var_ref(v);
+    vm->var_cache.used++;
+    return vm->var_cache.used-1;
 }
 
 static bool try_var_cache(vm_t* vm, PC* ins, var_t* v) {
@@ -1354,10 +1361,17 @@ static bool try_var_cache(vm_t* vm, PC* ins, var_t* v) {
 }
 
 static void load_ncache_init(vm_t* vm) {
+	if(vm->load_ncache.size == 0)
+		vm->load_ncache.size = LOAD_NCACHE_MAX_DEF;
+	vm->load_ncache.cache = (load_ncache_t*)_malloc(vm->load_ncache.size*sizeof(load_ncache_t));
     uint32_t i;
-    for(i=0; i<LOAD_NCACHE_MAX; ++i) {
-        memset(&vm->load_ncache[i], 0, sizeof(load_ncache_t));
+    for(i=0; i<vm->load_ncache.size; ++i) {
+        memset(&vm->load_ncache.cache[i], 0, sizeof(load_ncache_t));
     }
+}
+
+static void load_ncache_free(vm_t* vm) {
+	_free(vm->load_ncache.cache);
 }
 
 static void load_ncache_invalidate(vm_t* vm, node_t* node) {
@@ -1365,10 +1379,10 @@ static void load_ncache_invalidate(vm_t* vm, node_t* node) {
         return;
 
     uint32_t i = (node->ncache_instr & OFF_MASK);
-	if(i >= LOAD_NCACHE_MAX)
+	if(i >= LOAD_NCACHE_MAX_DEF)
 		return;
 
-    load_ncache_t* l = &vm->load_ncache[i];
+    load_ncache_t* l = &vm->load_ncache.cache[i];
     if(l->node != node || l->old_instr_pcs == NULL) 
 		return;
 
@@ -1386,7 +1400,7 @@ static void load_ncache(vm_t* vm, node_t* node, PC instr_pc) {
 	PC* code = vm->bc.code_buf;
 	if(node->ncache_instr != 0) {
     	uint32_t i = (node->ncache_instr & OFF_MASK);
-        load_ncache_t* l = &vm->load_ncache[i];	
+        load_ncache_t* l = &vm->load_ncache.cache[i];	
 		if(l->node != node || l->old_instr_pcs == NULL)
 			return;
 
@@ -1398,8 +1412,8 @@ static void load_ncache(vm_t* vm, node_t* node, PC instr_pc) {
 	}
 
 	uint32_t i;
-    for(i=0; i<LOAD_NCACHE_MAX; ++i) {
-        load_ncache_t* l = &vm->load_ncache[i];	
+    for(i=0; i<LOAD_NCACHE_MAX_DEF; ++i) {
+        load_ncache_t* l = &vm->load_ncache.cache[i];	
         if(l->node == NULL) {
 			node->ncache_instr = INS(INSTR_NCACHE, i);
 			l->old_instr_pcs = array_new();
@@ -1788,8 +1802,8 @@ static inline void gc_mark(var_t* var, bool mark) {
 static inline void gc_mark_cache(vm_t* vm, bool mark) {
 #ifdef MARIO_CACHE
 	uint32_t i;
-	for(i=0; i<vm->var_cache_used; ++i) {
-		var_t* v = vm->var_cache[i];
+	for(i=0; i<vm->var_cache.used; ++i) {
+		var_t* v = vm->var_cache.cache[i];
 		gc_mark(v, mark);
 	}
 #endif
@@ -3728,12 +3742,12 @@ static inline void handle_continue(vm_t* vm, PC ins, opr_code_t instr, uint32_t 
 
 #ifdef MARIO_CACHE
 static inline void handle_cache(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
-	var_t* v = vm->var_cache[offset];
+	var_t* v = vm->var_cache.cache[offset];
 	vm_push(vm, v);
 }
 
 static inline void handle_ncache(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
-	node_t* node = vm->load_ncache[offset].node;
+	node_t* node = vm->load_ncache.cache[offset].node;
 	vm_push_node(vm, node);
 }
 #endif
@@ -4465,6 +4479,7 @@ void vm_close(vm_t* vm) {
 
 	#ifdef MARIO_CACHE
 	var_cache_free(vm);
+	load_ncache_free(vm);
 	#endif
 
 	vm_pop_scope(vm);
