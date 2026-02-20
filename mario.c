@@ -3042,7 +3042,7 @@ static void func_mark_closure(vm_t* vm, var_t* func) { //try mark function closu
 		scope_t* sc = (scope_t*)array_get(vm->scopes, i);
 		if(sc->is_func) { //enter closure
 			mark = true;
-			//var_add(func, CLOSURE, closure);
+			var_add(func, CLOSURE, closure);
 		}
 		if(mark) {
 			var_array_add(closure, sc->var);
