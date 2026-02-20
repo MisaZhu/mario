@@ -1361,31 +1361,55 @@ static void load_ncache_init(vm_t* vm) {
 }
 
 static void load_ncache_invalidate(vm_t* vm, node_t* node) {
-	if(node == NULL || !node->ncached)
+	if(node == NULL || node->ncache_instr == 0)
         return;
 
-    uint32_t i;
+    uint32_t i = (node->ncache_instr & OFF_MASK);
+	if(i >= LOAD_NCACHE_MAX)
+		return;
+
+    load_ncache_t* l = &vm->load_ncache[i];
+    if(l->node != node || l->old_instr_pcs == NULL) 
+		return;
+
 	PC* code = vm->bc.code_buf;
-    for(i=0; i<LOAD_NCACHE_MAX; ++i) {
-        load_ncache_t* l = &vm->load_ncache[i];
-        if(l->node == node) {
-			code[l->old_instr_pc] = l->old_instr;
-            memset(l, 0, sizeof(load_ncache_t));
-        }
-    }
+	uint32_t j;
+	for(j=0; j<l->old_instr_pcs->size; ++j) {
+		PC pc = *(PC*)array_get(l->old_instr_pcs, j);
+		code[pc] = l->old_instr;
+	}
+	array_free(l->old_instr_pcs, NULL);
+    memset(l, 0, sizeof(load_ncache_t));
 }
 
 static void load_ncache(vm_t* vm, node_t* node, PC instr_pc) {
-	uint32_t i;
 	PC* code = vm->bc.code_buf;
+	if(node->ncache_instr != 0) {
+    	uint32_t i = (node->ncache_instr & OFF_MASK);
+        load_ncache_t* l = &vm->load_ncache[i];	
+		if(l->node != node || l->old_instr_pcs == NULL)
+			return;
+
+		code[instr_pc] = node->ncache_instr;
+		PC* pc = (PC*)_malloc(sizeof(PC));
+		*pc = instr_pc;
+		array_add(l->old_instr_pcs, (void*)pc);
+		return;
+	}
+
+	uint32_t i;
     for(i=0; i<LOAD_NCACHE_MAX; ++i) {
         load_ncache_t* l = &vm->load_ncache[i];	
         if(l->node == NULL) {
-			node->ncached = true;
+			node->ncache_instr = INS(INSTR_NCACHE, i);
+			l->old_instr_pcs = array_new();
 			l->node = node;
-			l->old_instr_pc = instr_pc;
+
+			PC* pc = (PC*)_malloc(sizeof(PC));
+			*pc = instr_pc;
+			array_add(l->old_instr_pcs, (void*)pc);
 			l->old_instr = code[instr_pc];
-			code[instr_pc] = INS(INSTR_NCACHE, i);
+			code[instr_pc] = node->ncache_instr;
 			break;
         }
     }

@@ -408,12 +408,12 @@ typedef struct st_func {
 
 //script node for var member children
 typedef struct st_node {
-	uint16_t magic: 8; //1 for node
-	uint16_t be_const : 2;
-	uint16_t be_inherited : 2;
-	uint16_t be_unenumerable : 2;
-	uint16_t invisable : 1;
-	uint16_t ncached : 1;
+	uint32_t magic: 8; //1 for node
+	uint32_t be_const : 8;
+	uint32_t be_inherited : 8;
+	uint32_t be_unenumerable : 4;
+	uint32_t invisable : 4;
+	uint32_t ncache_instr;
 	char* name;
 	var_t* var;
 } node_t;
@@ -433,7 +433,7 @@ typedef struct st_isignal {
 #endif
 
 typedef struct st_ic_entry {
-    PC old_instr_pc;     
+    m_array_t* old_instr_pcs;     
     PC old_instr;      
     node_t* node;
 } load_ncache_t;
