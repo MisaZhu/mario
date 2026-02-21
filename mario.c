@@ -111,7 +111,7 @@ static void raw_mem_quit() {
 	if(block != NULL) { // mem clean
 		mario_debug("[debug]memory is leaking!!!\n");
 		while(block != NULL) {
-			mario_debug(" %s, %d, 0x%x, size=%d\n", block->file, block->line, (uint32_t)block->p, block->size);
+			mario_debug(" %s, %d, 0x%x, size=%d\n", block->file, block->line, block->p, block->size);
 			block = block->next;
 		}
 	}
@@ -1999,6 +1999,22 @@ static inline void gc_mark_isignal(vm_t* vm, bool mark) {
 #endif
 }
 
+static var_t* func_get_closure(var_t* var) {
+	func_t* func = var_get_func(var);
+	if(func == NULL)
+		return NULL;
+	return func->closure;
+}
+
+static bool func_set_closure(var_t* var, var_t* closure) {
+	func_t* func = var_get_func(var);
+	if(func != NULL) {
+		func->closure = closure;
+		return true;
+	}
+	return false;
+}
+
 static inline void var_free(void* p) {
 	var_t* var = (var_t*)p;
 	if(var_empty(var))
@@ -2006,6 +2022,15 @@ static inline void var_free(void* p) {
 
 	vm_t* vm = var->vm;
 	uint32_t status = var->status; //store status of variable
+
+	if(var->is_func) {
+		func_t* func = var_get_func(var);
+		if(func != NULL && func->closure != NULL) {
+			var_unref(func->closure);
+			func->closure = NULL;
+		}
+	}
+
 	//clean var.
 	var_clean(var);
 	var->type = V_UNDEF;
@@ -2323,7 +2348,7 @@ inline var_t* var_set_float(var_t* var, float v) {
 }
 
 inline func_t* var_get_func(var_t* var) {
-	if(var == NULL || var->value == NULL)
+	if(var == NULL || var->value == NULL || !var->is_func)
 		return NULL;
 	
 	return (func_t*)var->value;
@@ -2672,6 +2697,7 @@ typedef struct st_scope {
 	uint32_t is_try: 8;
 	uint32_t is_loop: 4;
 	uint32_t is_strict: 4;
+	var_t*   closure;
 	//continue and break anchor for loop(while/for)
 } scope_t;
 
@@ -2806,13 +2832,11 @@ static inline node_t* vm_find_in_closure(var_t* closure, const char* name) {
 	return ret;
 }
 
-#define CLOSURE "__closure"
-
 static inline node_t* vm_find_in_scopes(vm_t* vm, const char* name) {
 	node_t* ret = NULL;
 	scope_t* sc = vm_get_scope(vm);
 	if(sc != NULL && sc->is_func) {
-		var_t* closure = get_obj(sc->var, CLOSURE);
+		var_t* closure = sc->closure;
 		if(closure != NULL) {
 			ret = vm_find_in_closure(closure, name);	
 			if(ret != NULL)
@@ -3025,14 +3049,10 @@ static var_t* find_func(vm_t* vm, var_t* obj, const char* fname) {
 	return NULL;
 }
 
-static var_t* func_get_closure(var_t* var) {
-	return get_obj(var, CLOSURE);
-}
-
-static void func_mark_closure(vm_t* vm, var_t* func) { //try mark function closure
+static void func_mark_closure(vm_t* vm, var_t* func_var) { //try mark function closure
 	if(vm->scopes->size <=0)
 		return;
-	if(func_get_closure(func) != NULL)
+	if(func_get_closure(func_var) != NULL)
 		return;
 
 	var_t* closure = var_new_array(vm);
@@ -3042,15 +3062,15 @@ static void func_mark_closure(vm_t* vm, var_t* func) { //try mark function closu
 		scope_t* sc = (scope_t*)array_get(vm->scopes, i);
 		if(sc->is_func) { //enter closure
 			mark = true;
-			var_add(func, CLOSURE, closure);
-		}
-		if(mark) {
 			var_array_add(closure, sc->var);
 		}
 	}
-	if(!mark) {
-		var_unref(closure); //not a closure.
+
+	if(mark) {
+		if(func_set_closure(func_var, closure))
+			return;
 	}
+	var_unref(closure); //not a closure.
 }
 
 static bool func_call(vm_t* vm, var_t* obj, var_t* func_var, int arg_num) {
@@ -3064,10 +3084,6 @@ static bool func_call(vm_t* vm, var_t* obj, var_t* func_var, int arg_num) {
 	else {
 		var_add(env, THIS, obj);
 	}
-	
-	var_t* closure = func_get_closure(func_var);
-	if(closure != NULL)
-		var_add(env, CLOSURE, closure);
 
 	int32_t i;
 	for(i=arg_num; i>func->args.size; i--) {
@@ -3111,6 +3127,8 @@ static bool func_call(vm_t* vm, var_t* obj, var_t* func_var, int arg_num) {
 		scope_t* sc = scope_new(env);
 		sc->pc = vm->pc;
 		sc->is_func = true;
+		sc->closure = func->closure;
+
 		vm_push_scope(vm, sc);
 
 		//script function
@@ -3119,6 +3137,7 @@ static bool func_call(vm_t* vm, var_t* obj, var_t* func_var, int arg_num) {
 			ret = vm_pop2(vm);
 			ret->refs--;
 		}
+		//scope's already poped with function return
 	}
 	if(ret == NULL)
 		ret = var_new(vm);
