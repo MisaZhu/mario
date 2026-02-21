@@ -53,7 +53,7 @@ static inline void mem_lock() { }
 static inline void mem_unlock() { }
 #endif
 
-static inline void* raw_malloc(uint32_t size, const char* file, uint32_t line) {
+inline void* mario_malloc_raw(uint32_t size, const char* file, uint32_t line) {
 	if(size == 0)
 		return NULL;
 
@@ -73,7 +73,7 @@ static inline void* raw_malloc(uint32_t size, const char* file, uint32_t line) {
 	return block->p;
 }
 
-static inline void raw_free(void* p) {
+static inline void mario_free_raw(void* p) {
 	mem_lock();
 	mem_block_t* block = _mem_head;	
 	while(block != NULL) {
@@ -122,19 +122,7 @@ static void raw_mem_quit() {
 	mem_lock_destroy();
 }
 
-inline void* mario_malloc_raw(uint32_t size, const char* file, uint32_t line) {
-	return raw_malloc(size, file, line);
-}
-
 #else
-
-static inline void* raw_malloc(uint32_t size) {
-	return _platform_malloc(size);
-}
-
-static inline void raw_free(void* p) {
-	return _platform_free(p);
-}
 
 static void raw_mem_init() { 
 }
@@ -143,14 +131,18 @@ static void raw_mem_quit() {
 }
 
 inline void* mario_malloc_raw(uint32_t size) {
-	return raw_malloc(size);
+	return _platform_malloc(size);
 }
-#endif
 
+static inline void mario_free_raw(void* p) {
+	_platform_free(p);
+}
+
+#endif
 
 inline void mario_free(void* p) {
 	if(p != NULL)
-		raw_free(p);
+		mario_free_raw(p);
 }
 
 void  free_none(void* p) { }
