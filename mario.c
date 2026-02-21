@@ -109,14 +109,14 @@ static void raw_mem_quit() {
 	mem_lock();
 	mem_block_t* block = _mem_head;	
 	if(block != NULL) { // mem clean
-		mario_debug("[debug]memory is leaking!!!\n");
+		mario_debug("memory is leaking!!!\n");
 		while(block != NULL) {
 			mario_debug(" %s, %d, 0x%x, size=%d\n", block->file, block->line, block->p, block->size);
 			block = block->next;
 		}
 	}
 	else {
-		mario_debug("[debug] memory is clean.\n");
+		mario_debug("memory is clean.\n");
 	}
 	mem_unlock();
 	mem_lock_destroy();
@@ -1642,10 +1642,11 @@ void node_free(void* p) {
 		load_ncache_invalidate(node->var->vm, node);
 	}
 
-	mario_free(node->name);
+
 	if(!var_empty(node->var)) {
 		var_unref(node->var);
 	}
+	mario_free(node->name);
 	mario_free(node);
 }
 
@@ -1940,14 +1941,46 @@ static inline void remove_from_gc(var_t* var) {
 		var->vm->gc.gc_vars_num--;
 }
 
+static var_t* func_get_closure(var_t* var) {
+	func_t* func = var_get_func(var);
+	if(func == NULL)
+		return NULL;
+	return func->closure;
+}
+
+static bool func_set_closure(var_t* var, var_t* closure) {
+	func_t* func = var_get_func(var);
+	if(func != NULL) {
+		func->closure = var_ref(closure);
+		return true;
+	}
+	return false;
+}
+
+static inline void gc_mark(var_t* var, bool mark);
+
+static void gc_mark_callback(const char* key, void* value, void* user_data) {
+  	bool mark = *(bool*)user_data;
+  	node_t* node = (node_t*)value;
+	if(!node_empty(node)) {
+		node->var->gc_marked = mark;
+		if(node->var->gc_marking == false) {
+			if(strcmp(node->name, "a") == 0)
+				mario_printf("gc mark var %s, %x, %d\n", node->name, node->var, node->var->is_func);
+			gc_mark(node->var, mark);
+		}
+	}
+}
+
 static inline void gc_mark(var_t* var, bool mark) {
   	if(var_empty(var))
   		return;
 
   	var->gc_marking = true;
-  	// Use hash map iteration instead of array iteration
-  	// For now, we'll skip this since hash_map_iterate isn't implemented yet
-  	// TODO: Implement hash_map_iterate and use it here
+	var->gc_marked = mark;
+
+  	// Use hash map iteration to mark all children
+  	hash_map_iterate(&var->children, gc_mark_callback, &mark);
   	var->gc_marking = false;
 }
 
@@ -1999,23 +2032,7 @@ static inline void gc_mark_isignal(vm_t* vm, bool mark) {
 #endif
 }
 
-static var_t* func_get_closure(var_t* var) {
-	func_t* func = var_get_func(var);
-	if(func == NULL)
-		return NULL;
-	return func->closure;
-}
-
-static bool func_set_closure(var_t* var, var_t* closure) {
-	func_t* func = var_get_func(var);
-	if(func != NULL) {
-		func->closure = closure;
-		return true;
-	}
-	return false;
-}
-
-static inline void var_free(void* p) {
+void var_free(void* p) {
 	var_t* var = (var_t*)p;
 	if(var_empty(var))
 		return;
@@ -2080,16 +2097,16 @@ inline void var_unref(var_t* var) {
 }
 
 static inline void gc_vars(vm_t* vm) {
-	mario_debug("gc marking root\n");
+	//mario_debug("gc marking root\n");
 	gc_mark(vm->root, true); //mark all rooted vars
-	mario_debug("gc marking stack\n");
+	//mario_debug("gc marking stack\n");
 	gc_mark_stack(vm, true); //mark all stacked vars
-	mario_debug("gc marking interrupt\n");
+	//mario_debug("gc marking interrupt\n");
 	gc_mark_isignal(vm, true); //mark all interrupt signal vars
-	mario_debug("gc marking cache\n");
+	//mario_debug("gc marking cache\n");
 	gc_mark_cache(vm, true); //mark all cached vars
 
-	mario_debug("free all marked var\n");
+	//mario_debug("free all unmarked var\n");
 	var_t* v = vm->gc.gc_vars;
 	//first step: free unmarked vars
 	while(v != NULL) {
@@ -2102,13 +2119,13 @@ static inline void gc_vars(vm_t* vm) {
 		v = next;
 	}
 
-	mario_debug("gc unmarking root\n");
+	//mario_debug("gc unmarking root\n");
 	gc_mark(vm->root, false); //unmark all rooted vars
-	mario_debug("gc unmarking stack\n");
+	//mario_debug("gc unmarking stack\n");
 	gc_mark_stack(vm, false); //unmark all stacked vars
-	mario_debug("gc unmarking interrupt\n");
+	//mario_debug("gc unmarking interrupt\n");
 	gc_mark_isignal(vm, false); //unmark all interrupt signal vars
-	mario_debug("gc unmarking cache\n");
+	//mario_debug("gc unmarking cache\n");
 	gc_mark_cache(vm, false); //unmark all cached vars
 
 	mario_debug("gc recycle free vars\n");
@@ -2143,7 +2160,7 @@ static inline void gc(vm_t* vm, bool force) {
 		return;
 	if(!force && vm->gc.gc_vars_num < vm->gc.gc_trig_var_num)
 		return;
-	mario_debug("[debug] do gc ......\n");
+	mario_debug("do gc ......\n");
 	vm->gc.is_doing_gc = true;
 	mario_debug("marking ......\n");
 	gc_vars(vm);
@@ -2820,15 +2837,7 @@ bool var_instanceof(var_t* var, var_t* proto) {
 }
 
 static inline node_t* vm_find_in_closure(var_t* closure, const char* name) {
-	int sz = var_array_size(closure);
-	int i;
-	node_t* ret = NULL;
-	for(i=0; i<sz; ++i) {
-		var_t* var = var_array_get_var(closure, i);
-		ret = var_find_own_member(var, name);
-		if(ret != NULL)
-			break;
-	}
+	node_t* ret = var_find_own_member(closure, name);
 	return ret;
 }
 
@@ -3049,30 +3058,6 @@ static var_t* find_func(vm_t* vm, var_t* obj, const char* fname) {
 	return NULL;
 }
 
-static void func_mark_closure(vm_t* vm, var_t* func_var) { //try mark function closure
-	if(vm->scopes->size <=0)
-		return;
-	if(func_get_closure(func_var) != NULL)
-		return;
-
-	var_t* closure = var_new_array(vm);
-	bool mark = false;
-	int i;
-	for(i=0; i<vm->scopes->size; ++i) {
-		scope_t* sc = (scope_t*)array_get(vm->scopes, i);
-		if(sc->is_func) { //enter closure
-			mark = true;
-			var_array_add(closure, sc->var);
-		}
-	}
-
-	if(mark) {
-		if(func_set_closure(func_var, closure))
-			return;
-	}
-	var_unref(closure); //not a closure.
-}
-
 static bool func_call(vm_t* vm, var_t* obj, var_t* func_var, int arg_num) {
 	var_t *env = var_new_obj_no_proto(vm, NULL, NULL);
 	var_t* args = var_new_array(vm);
@@ -3127,7 +3112,6 @@ static bool func_call(vm_t* vm, var_t* obj, var_t* func_var, int arg_num) {
 		scope_t* sc = scope_new(env);
 		sc->pc = vm->pc;
 		sc->is_func = true;
-		sc->closure = func->closure;
 
 		vm_push_scope(vm, sc);
 
@@ -3476,7 +3460,7 @@ void do_get(vm_t* vm, var_t* v, const char* name) {
 			n = var_add(v, name, NULL);
 		}
 		else {
-			mario_debug("[debug] Can not get member '%s'!\n", name);
+			mario_debug("Can not get member '%s'!\n", name);
 			n = node_new(vm, name, NULL);
 			vm_push(vm, var_new(vm));
 			return;
@@ -3489,7 +3473,7 @@ void do_get(vm_t* vm, var_t* v, const char* name) {
 static void do_extends(vm_t* vm, var_t* cls_var, const char* super_name) {
 	node_t* n = vm_find_in_scopes(vm, super_name);
 	if(n == NULL) {
-		mario_debug("[debug] Super Class '%s' not found!\n", super_name);
+		mario_debug("Super Class '%s' not found!\n", super_name);
 		return;
 	}
 
@@ -3575,7 +3559,7 @@ var_t* call_m_func_by_name(vm_t* vm, var_t* obj, const char* func_name, var_t* a
 		obj = vm->root;
 	node_t* func = var_find_member(obj, func_name);
 	if(func == NULL || func->var->is_func == 0) {
-		mario_debug("[debug] Interrupt function '%s' not defined!\n", func_name);
+		mario_debug("Interrupt function '%s' not defined!\n", func_name);
 		return NULL;
 	}
 	return call_m_func(vm, obj, func->var, args);
@@ -3593,14 +3577,14 @@ static bool interrupt_raw(vm_t* vm, var_t* obj, const char* func_name, var_t* fu
 
 	pthread_mutex_lock(&vm->thread_lock);
 	if(vm->isignal_num >= MAX_ISIGNAL) {
-		mario_debug("[debug] Too many interrupt signals!\n");
+		mario_debug("Too many interrupt signals!\n");
 		pthread_mutex_unlock(&vm->thread_lock);
 		return false;
 	}
 
 	isignal_t* is = (isignal_t*)mario_malloc(sizeof(isignal_t));
 	if(is == NULL) {
-		mario_debug("[debug] Interrupt signal input error!\n");
+		mario_debug("Interrupt signal input error!\n");
 		pthread_mutex_unlock(&vm->thread_lock);
 		return false;
 	}
@@ -4132,7 +4116,7 @@ static inline void handle_var(vm_t* vm, PC ins, opr_code_t instr, uint32_t offse
 	const char* s = bc_getstr(&vm->bc, offset);
 	node_t *node = vm_find(vm, s);
 	if(node != NULL) {
-		mario_debug("[debug] Warning: '%s' has already existed!\n", s);
+		mario_debug("Warning: '%s' has already existed!\n", s);
 	}
 	else {
 		var_t* v = vm_get_scope_var(vm);
@@ -4312,7 +4296,6 @@ static inline void handle_func(vm_t* vm, PC ins, opr_code_t instr, uint32_t offs
 			(instr == INSTR_FUNC ? true : false),
 			(instr == INSTR_FUNC_STC ? true : false));
 	if(v != NULL) {
-		func_mark_closure(vm, v);
 		vm_push(vm, v);
 	}
 }
