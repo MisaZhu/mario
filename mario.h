@@ -416,7 +416,11 @@ typedef struct st_func {
 	void *data;
 	m_array_t args; //argument names
 	var_t* owner;
-	var_t* closure;
+
+	struct {
+		var_t* var;
+		struct st_func* func;
+	} closure;
 } func_t;
 
 //script node for var member children

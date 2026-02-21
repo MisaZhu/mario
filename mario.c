@@ -1941,17 +1941,12 @@ static inline void remove_from_gc(var_t* var) {
 		var->vm->gc.gc_vars_num--;
 }
 
-static var_t* func_get_closure(var_t* var) {
-	func_t* func = var_get_func(var);
-	if(func == NULL)
-		return NULL;
-	return func->closure;
-}
-
-static bool func_set_closure(var_t* var, var_t* closure) {
+static bool func_set_closure(var_t* var, var_t* closure, func_t* closure_func) {
 	func_t* func = var_get_func(var);
 	if(func != NULL) {
-		func->closure = var_ref(closure);
+		var->refs--;
+		func->closure.var = var_ref(closure);
+		func->closure.func = closure_func;
 		return true;
 	}
 	return false;
@@ -2042,9 +2037,9 @@ void var_free(void* p) {
 
 	if(var->is_func) {
 		func_t* func = var_get_func(var);
-		if(func != NULL && func->closure != NULL) {
-			var_unref(func->closure);
-			func->closure = NULL;
+		if(func != NULL && func->closure.var != NULL) {
+			var_unref(func->closure.var);
+			func->closure.var = NULL;
 		}
 	}
 
@@ -2714,7 +2709,7 @@ typedef struct st_scope {
 	uint32_t is_try: 8;
 	uint32_t is_loop: 4;
 	uint32_t is_strict: 4;
-	var_t*   closure;
+	func_t*  func;
 	//continue and break anchor for loop(while/for)
 } scope_t;
 
@@ -2836,20 +2831,19 @@ bool var_instanceof(var_t* var, var_t* proto) {
 	return false;
 }
 
-static inline node_t* vm_find_in_closure(var_t* closure, const char* name) {
-	node_t* ret = var_find_own_member(closure, name);
-	return ret;
-}
-
 static inline node_t* vm_find_in_scopes(vm_t* vm, const char* name) {
 	node_t* ret = NULL;
 	scope_t* sc = vm_get_scope(vm);
 	if(sc != NULL && sc->is_func) {
-		var_t* closure = sc->closure;
-		if(closure != NULL) {
-			ret = vm_find_in_closure(closure, name);	
+		var_t* closure = sc->func->closure.var;
+		func_t* closure_func = sc->func->closure.func;
+		while(closure != NULL && closure_func != NULL) {
+			ret = var_find_own_member(closure, name);	
 			if(ret != NULL)
 				return ret;
+			
+			closure = closure_func->closure.var;
+			closure_func = closure_func->closure.func;
 		}
 	}
 	
@@ -3112,6 +3106,7 @@ static bool func_call(vm_t* vm, var_t* obj, var_t* func_var, int arg_num) {
 		scope_t* sc = scope_new(env);
 		sc->pc = vm->pc;
 		sc->is_func = true;
+		sc->func = func;
 
 		vm_push_scope(vm, sc);
 
@@ -4087,6 +4082,7 @@ static inline void handle_pplus(vm_t* vm, PC ins, opr_code_t instr, uint32_t off
 }
 
 static inline void handle_return(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
+	var_t* ret = NULL;
 	if(instr == INSTR_RETURN) {
 		var_t* thisV = vm_this_in_scopes(vm);
 		if(thisV != NULL)
@@ -4095,7 +4091,7 @@ static inline void handle_return(vm_t* vm, PC ins, opr_code_t instr, uint32_t of
 			vm_push(vm, var_new(vm));
 	}
 	else {
-		var_t* ret = vm_pop2(vm);
+		ret = vm_pop2(vm);
 		vm_push(vm, ret);
 		var_unref(ret);
 	}
@@ -4104,6 +4100,9 @@ static inline void handle_return(vm_t* vm, PC ins, opr_code_t instr, uint32_t of
 		scope_t* sc = vm_get_scope(vm);
 		if(sc == NULL) break;
 		if(sc->is_func) {
+			if(ret != NULL)
+				func_set_closure(ret, sc->var, sc->func);
+
 			vm->pc = sc->pc;
 			vm_pop_scope(vm);
 			break;
