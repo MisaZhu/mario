@@ -17,8 +17,8 @@ extern void  (*_platform_out)(const char*);
 
 /**====== memory functions.======*/
 
-void mario_mem_init();
-void mario_mem_quit();
+void        mario_mem_init();
+void        mario_mem_quit();
 
 #ifdef MARIO_DEBUG
 extern void* mario_malloc_raw(uint32_t size, const char* file, uint32_t line);
@@ -32,175 +32,157 @@ extern void  mario_free(void* p);
 extern void* _realloc(void* p, uint32_t old_size, uint32_t new_size);
 
 /**====== debug functions.======*/
-void mario_debug(const char *format, ...);
-void mario_printf(const char *format, ...);
+void        mario_debug(const char *format, ...);
+void        mario_printf(const char *format, ...);
 
 /**====== array functions. ======*/
 #define STATIC_mstr_MAX 32
 typedef void (*free_func_t)(void* p);
 
 typedef struct st_array {
-	void** items;
-	uint32_t max: 16;
-	uint32_t size: 16;
+	void**     items;
+	uint32_t   max: 16;
+	uint32_t   size: 16;
 } m_array_t;
 
-m_array_t* array_new(void);
-void array_free(m_array_t* array, free_func_t fr);
-void array_init(m_array_t* array);
-void array_add(m_array_t* array, void* item);
-void array_add_head(m_array_t* array, void* item);
-void* array_add_buf(m_array_t* array, void* s, uint32_t sz);
-void* array_get(m_array_t* array, uint32_t index);
-void* array_set(m_array_t* array, uint32_t index, void* p);
-void* array_tail(m_array_t* array);
-void* array_head(m_array_t* array);
-void* array_remove(m_array_t* array, uint32_t index);
-void array_del(m_array_t* array, uint32_t index, free_func_t fr);
-void array_remove_all(m_array_t* array);
-void array_clean(m_array_t* array, free_func_t fr);
+m_array_t*  array_new(void);
+void        array_free(m_array_t* array, free_func_t fr);
+void        array_init(m_array_t* array);
+void        array_add(m_array_t* array, void* item);
+void        array_add_head(m_array_t* array, void* item);
+void*       array_add_buf(m_array_t* array, void* s, uint32_t sz);
+void*       array_get(m_array_t* array, uint32_t index);
+void*       array_set(m_array_t* array, uint32_t index, void* p);
+void*       array_tail(m_array_t* array);
+void*       array_head(m_array_t* array);
+void*       array_remove(m_array_t* array, uint32_t index);
+void        array_del(m_array_t* array, uint32_t index, free_func_t fr);
+void        array_remove_all(m_array_t* array);
+void        array_clean(m_array_t* array, free_func_t fr);
 #define array_tail(array) (((array)->items == NULL || (array)->size == 0) ? NULL: (array)->items[(array)->size-1]);
 
 /**====== hash map functions ======*/
 
 // Hash map entry structure
 typedef struct st_hash_entry {
-	char* key;
-	void* value;
+	char*               key;
+	void*               value;
 	struct st_hash_entry* next;
 } hash_entry_t;
 
 // Hash map structure
 typedef struct st_hash_map {
-	hash_entry_t** buckets;
-	uint32_t size;
-	uint32_t capacity;
-	uint32_t load_factor_num;   // 负载因子分子
-	uint32_t load_factor_den;   // 负载因子分母
+	hash_entry_t**      buckets;
+	uint32_t            size;
+	uint32_t            capacity;
+	uint32_t            load_factor_num;   // 负载因子分子
+	uint32_t            load_factor_den;   // 负载因子分母
 } hash_map_t;
 
 // Hash map functions
 hash_map_t* hash_map_new(void);
-void hash_map_free(hash_map_t* map, free_func_t free_key, free_func_t free_value);
-void hash_map_init(hash_map_t* map);
-void hash_map_add(hash_map_t* map, const char* key, void* value);
-void* hash_map_get(hash_map_t* map, const char* key);
-void* hash_map_remove(hash_map_t* map, const char* key);
-uint32_t hash_map_size(hash_map_t* map);
-void hash_map_clean(hash_map_t* map, free_func_t free_key, free_func_t free_value);
-void hash_map_iterate(hash_map_t* map, void (*callback)(const char* key, void* value, void* user_data), void* user_data);
+void        hash_map_free(hash_map_t* map, free_func_t free_key, free_func_t free_value);
+void        hash_map_init(hash_map_t* map);
+void        hash_map_add(hash_map_t* map, const char* key, void* value);
+void*       hash_map_get(hash_map_t* map, const char* key);
+void*       hash_map_remove(hash_map_t* map, const char* key);
+uint32_t    hash_map_size(hash_map_t* map);
+void        hash_map_clean(hash_map_t* map, free_func_t free_key, free_func_t free_value);
+void        hash_map_iterate(hash_map_t* map, void (*callback)(const char* key, void* value, void* user_data), void* user_data);
 
 /**====== string functions. ======*/
 
 typedef struct st_mstr {
-	char* cstr;
-	uint32_t max: 16;
-	uint32_t len: 16;
+	char*               cstr;
+	uint32_t            max: 16;
+	uint32_t            len: 16;
 } mstr_t;
 
-void mstr_reset(mstr_t* str);
-char* mstr_ncpy(mstr_t* str, const char* src, uint32_t l);
-char* mstr_cpy(mstr_t* str, const char* src);
-mstr_t* mstr_new(const char* s);
-mstr_t* mstr_new_by_size(uint32_t sz);
-char* mstr_append(mstr_t* str, const char* src);
-char* mstr_add(mstr_t* str, char c);
-char* mstr_add_int(mstr_t* str, int i, int base);
-char* mstr_add_float(mstr_t* str, float f);
-void mstr_free(mstr_t* str);
+void        mstr_reset(mstr_t* str);
+char*       mstr_ncpy(mstr_t* str, const char* src, uint32_t l);
+char*       mstr_cpy(mstr_t* str, const char* src);
+mstr_t*     mstr_new(const char* s);
+mstr_t*     mstr_new_by_size(uint32_t sz);
+char*       mstr_append(mstr_t* str, const char* src);
+char*       mstr_add(mstr_t* str, char c);
+char*       mstr_add_int(mstr_t* str, int i, int base);
+char*       mstr_add_float(mstr_t* str, float f);
+void        mstr_free(mstr_t* str);
 const char* mstr_from_int(int i, int base);
 const char* mstr_from_float(float f);
 const char* mstr_from_bool(bool b);
-int mstr_to_int(const char* str);
-float mstr_to_float(const char* str);
-void mstr_split(const char* str, char c, m_array_t* array);
-int mstr_to(const char* str, char c, mstr_t* res, bool skipspace);
+int         mstr_to_int(const char* str);
+float       mstr_to_float(const char* str);
+void        mstr_split(const char* str, char c, m_array_t* array);
+int         mstr_to(const char* str, char c, mstr_t* res, bool skipspace);
 
 
 /**======utf8 string functions =======*/
 
 typedef struct st_utf8_reader {
-	const char* str;
-	uint32_t offset;
+	const char*         str;
+	uint32_t            offset;
 } utf8_reader_t;
 
 typedef m_array_t utf8_t;
 
-void utf8_reader_init(utf8_reader_t* reader, const char* s, uint32_t offset);
-bool utf8_read(utf8_reader_t* reader, mstr_t* dst);
+void        utf8_reader_init(utf8_reader_t* reader, const char* s, uint32_t offset);
+bool        utf8_read(utf8_reader_t* reader, mstr_t* dst);
 
-utf8_t* utf8_new(const char* s);
-void utf8_free(utf8_t* utf8);
-void utf8_append_raw(utf8_t* utf8, const char* s);
-void utf8_append(utf8_t* utf8, const char* s);
-uint32_t utf8_len(utf8_t* utf8);
-mstr_t* utf8_at(utf8_t* utf8, uint32_t at);
-void utf8_set(utf8_t* utf8, uint32_t at, const char* s);
-void utf8_to_str(utf8_t* utf8, mstr_t* str);
+utf8_t*     utf8_new(const char* s);
+void        utf8_free(utf8_t* utf8);
+void        utf8_append_raw(utf8_t* utf8, const char* s);
+void        utf8_append(utf8_t* utf8, const char* s);
+uint32_t    utf8_len(utf8_t* utf8);
+mstr_t*     utf8_at(utf8_t* utf8, uint32_t at);
+void        utf8_set(utf8_t* utf8, uint32_t at, const char* s);
+void        utf8_to_str(utf8_t* utf8, mstr_t* str);
 
 
 /**====== Script Lex. =======*/ 
 
 typedef enum {
 	LEX_EOF  =  0,
-  LEX_ID = 256,
+	LEX_ID   = 256,
 	LEX_INT,
-  LEX_FLOAT,
-  LEX_STR,
+	LEX_FLOAT,
+	LEX_STR,
 	LEX_BASIC_END
 } lex_basic_type_t;
 
 typedef struct st_lex {
-	const char* data;
+	const char*         data;
 
-	int32_t data_pos;
-	int32_t data_start, data_end;
-	char curr_ch, next_ch;
+	int32_t             data_pos;
+	int32_t             data_start, data_end;
+	char                curr_ch, next_ch;
 
-	uint32_t tk;
-	mstr_t* tk_str;
-	int32_t tk_start, tk_end, tk_last_end;
+	uint32_t            tk;
+	mstr_t*             tk_str;
+	int32_t             tk_start, tk_end, tk_last_end;
 } lex_t;
 
-bool is_whitespace(unsigned char ch);
+bool        is_whitespace(unsigned char ch);
+bool        is_space(unsigned char ch);
+bool        is_numeric(unsigned char ch);
+bool        is_number(const char* cstr);
+bool        is_hexadecimal(unsigned char ch);
+bool        is_alpha(unsigned char ch);
+bool        is_alpha_num(const char* cstr);
 
-bool is_space(unsigned char ch);
-
-bool is_numeric(unsigned char ch);
-
-bool is_number(const char* cstr);
-
-bool is_hexadecimal(unsigned char ch);
-
-bool is_alpha(unsigned char ch);
-
-bool is_alpha_num(const char* cstr);
-
-void lex_get_nextch(lex_t* lex);
-
-void lex_reset(lex_t* lex);
-
-void lex_init(lex_t * lex, const char* input);
-
-void lex_release(lex_t* lex);
-
-void lex_skip_whitespace(lex_t* lex);
-
-void lex_skip_space(lex_t* lex);
-
-bool lex_skip_comments_line(lex_t* lex, const char* start);
-
-bool lex_skip_comments_block(lex_t* lex, const char* start, const char* end);
-
-void lex_token_start(lex_t* lex); 
-
-void lex_token_end(lex_t* lex); 
-
-void lex_get_char_token(lex_t* lex); 
-
-void lex_get_basic_token(lex_t* lex); 
-
-void lex_get_pos(lex_t* lex, int* line, int *col, int pos);
+void        lex_get_nextch(lex_t* lex);
+void        lex_reset(lex_t* lex);
+void        lex_init(lex_t * lex, const char* input);
+void        lex_release(lex_t* lex);
+void        lex_skip_whitespace(lex_t* lex);
+void        lex_skip_space(lex_t* lex);
+bool        lex_skip_comments_line(lex_t* lex, const char* start);
+bool        lex_skip_comments_block(lex_t* lex, const char* start, const char* end);
+void        lex_token_start(lex_t* lex); 
+void        lex_token_end(lex_t* lex); 
+void        lex_get_char_token(lex_t* lex); 
+void        lex_get_basic_token(lex_t* lex); 
+void        lex_get_pos(lex_t* lex, int* line, int *col, int pos);
 
 /**====== MARIO_BC ======*/
 
@@ -208,10 +190,10 @@ void lex_get_pos(lex_t* lex, int* line, int *col, int pos);
 typedef uint32_t PC;
 typedef uint16_t opr_code_t;
 typedef struct st_bytecode {
-	PC cindex;
-	m_array_t mstr_table;
-	PC *code_buf;
-	uint32_t buf_size;
+	PC                  cindex;
+	m_array_t           mstr_table;
+	PC                 *code_buf;
+	uint32_t            buf_size;
 } bytecode_t;
 
 /*
@@ -239,7 +221,7 @@ typedef struct st_bytecode {
 #define INSTR_STORE        0x005 // STORE x       : pop and store to x
 #define INSTR_GET          0x006 // getfield
 
-#define INSTR_INT					 0x008 // INT int       : push int
+#define INSTR_INT          0x008 // INT int       : push int
 #define INSTR_FLOAT        0x009 // FLOAT float   : push float 
 #define INSTR_STR          0x00A // STR "str"     : push str
 #define INSTR_ARRAY_AT     0x00B // ARRAT         : get array element at
@@ -254,7 +236,7 @@ typedef struct st_bytecode {
 #define INSTR_CALL         0x013 // CALL x        : call function x and push res
 #define INSTR_CALLO        0x014 // CALL obj.x    : call object member function x and push res
 #define INSTR_CLASS        0x015 // class         
-#define INSTR_CLASS_END    0x016 // class end			
+#define INSTR_CLASS_END    0x016 // class end            
 #define INSTR_MEMBER       0x017 // member without name
 #define INSTR_MEMBERN      0x018 // : member with name
 #define INSTR_EXTENDS      0x019 // : class extends
@@ -283,7 +265,7 @@ typedef struct st_bytecode {
 #define INSTR_LES          0x035 // LES           : <
 
 #define INSTR_PLUSEQ       0x036 // +=
-#define INSTR_MINUSEQ      0x037 // -=	
+#define INSTR_MINUSEQ      0x037 // -=    
 #define INSTR_MULTIEQ      0x038 // *=
 #define INSTR_DIVEQ        0x039 // /=
 #define INSTR_MODEQ        0x03A // %=
@@ -341,20 +323,20 @@ typedef struct st_bytecode {
 #define INSTR_MAX          0x0D0 // Maximum instruction opcode value
 
 
-PC bc_gen(bytecode_t* bc, opr_code_t instr);
-PC bc_gen_str(bytecode_t* bc, opr_code_t instr, const char* s);
-PC bc_gen_int(bytecode_t* bc, opr_code_t instr, int32_t i);
-PC bc_gen_short(bytecode_t* bc, opr_code_t instr, int32_t i);
-void bc_set_instr(bytecode_t* bc, PC anchor, opr_code_t op, PC target);
-void bc_remove_instr(bytecode_t* bc, PC from, uint32_t num);
-uint32_t bc_getstrindex(bytecode_t* bc, const char* str);
-PC bc_add_instr(bytecode_t* bc, PC anchor, opr_code_t op, PC target);
-PC bc_reserve(bytecode_t* bc);
+PC          bc_gen(bytecode_t* bc, opr_code_t instr);
+PC          bc_gen_str(bytecode_t* bc, opr_code_t instr, const char* s);
+PC          bc_gen_int(bytecode_t* bc, opr_code_t instr, int32_t i);
+PC          bc_gen_short(bytecode_t* bc, opr_code_t instr, int32_t i);
+void        bc_set_instr(bytecode_t* bc, PC anchor, opr_code_t op, PC target);
+void        bc_remove_instr(bytecode_t* bc, PC from, uint32_t num);
+uint32_t    bc_getstrindex(bytecode_t* bc, const char* str);
+PC          bc_add_instr(bytecode_t* bc, PC anchor, opr_code_t op, PC target);
+PC          bc_reserve(bytecode_t* bc);
 
 #define bc_getstr(bc, i) (((i)>=(bc)->mstr_table.size) ? "" : (const char*)(bc)->mstr_table.items[(i)])
 
-void bc_init(bytecode_t* bc);
-void bc_release(bytecode_t* bc);
+void        bc_init(bytecode_t* bc);
+void        bc_release(bytecode_t* bc);
 
 
 /**====== mario_vm ======*/
@@ -383,56 +365,56 @@ extern const char* _mario_lang;
 struct st_vm;
 
 typedef struct st_var {
-	uint32_t magic: 8; //0 for var; 1 for node
-	uint32_t type:10;
-	uint32_t status: 4;
-	uint32_t is_array:2;
-	uint32_t is_func:2;
-	uint32_t is_class:2;
-	uint32_t gc_marking: 2;
-	uint32_t gc_marked: 2;
-	uint32_t refs;
+	uint32_t            magic: 8; //0 for var; 1 for node
+	uint32_t            type:10;
+	uint32_t            status: 4;
+	uint32_t            is_array:2;
+	uint32_t            is_func:2;
+	uint32_t            is_class:2;
+	uint32_t            gc_marking: 2;
+	uint32_t            gc_marked: 2;
+	uint32_t            refs;
 
-	uint32_t size;  // size for bytes type of value;
-	void* value;
+	uint32_t            size;  // size for bytes type of value;
+	void*               value;
 
-	free_func_t free_func; //how to free value
-	free_func_t on_destroy; //before destroyed.
+	free_func_t         free_func; //how to free value
+	free_func_t         on_destroy; //before destroyed.
 
-	struct st_var* prev; //for var list
-	struct st_var* next; //for var list
-	hash_map_t children;
-	struct st_vm* vm;
+	struct st_var*      prev; //for var list
+	struct st_var*      next; //for var list
+	hash_map_t          children;
+	struct st_vm*       vm;
 } var_t;
 
 typedef var_t* (*native_func_t)(struct st_vm *, var_t*, void*);
-void free_none(void* p);
+void        free_none(void* p);
 
 typedef struct st_func {
-	native_func_t native;
-	int8_t regular: 4;
-	int8_t is_static: 4;
-	PC pc;
-	void *data;
-	m_array_t args; //argument names
-	var_t* owner;
+	native_func_t       native;
+	int8_t              regular: 4;
+	int8_t              is_static: 4;
+	PC                  pc;
+	void*               data;
+	m_array_t           args; //argument names
+	var_t*              owner;
 
 	struct {
-		var_t* var;
-		struct st_func* func;
+		var_t*             var;
+		struct st_func*    func;
 	} closure;
 } func_t;
 
 //script node for var member children
 typedef struct st_node {
-	uint32_t magic: 8; //1 for node
-	uint32_t be_const : 8;
-	uint32_t be_inherited : 8;
-	uint32_t be_unenumerable : 4;
-	uint32_t invisable : 4;
-	uint32_t ncache_instr;
-	char* name;
-	var_t* var;
+	uint32_t            magic: 8; //1 for node
+	uint32_t            be_const : 8;
+	uint32_t            be_inherited : 8;
+	uint32_t            be_unenumerable : 4;
+	uint32_t            invisable : 4;
+	uint32_t            ncache_instr;
+	char*               name;
+	var_t*              var;
 } node_t;
 
 
@@ -440,19 +422,19 @@ typedef struct st_node {
 #include <pthread.h>
 
 typedef struct st_isignal {
-	var_t* obj;
-	var_t* handle_func;
-	mstr_t* handle_func_name;
-	mstr_t* msg;
-	struct st_isignal* next;
-	struct st_isignal* prev;
+	var_t*              obj;
+	var_t*              handle_func;
+	mstr_t*             handle_func_name;
+	mstr_t*             msg;
+	struct st_isignal*  next;
+	struct st_isignal*  prev;
 } isignal_t;
 #endif
 
 typedef struct st_ic_entry {
-    m_array_t* old_instr_pcs;     
-    PC old_instr;      
-    node_t* node;
+    m_array_t*          old_instr_pcs;     
+    PC                  old_instr;      
+    node_t*             node;
 } load_ncache_t;
 
 typedef bool (*compiler_func_t)(bytecode_t *bc, const char* input);
@@ -466,184 +448,184 @@ typedef bool (*compiler_func_t)(bytecode_t *bc, const char* input);
 #define VM_STACK_MAX    32
 
 typedef struct st_vm {
-	bytecode_t bc;
-	compiler_func_t compiler;
+	bytecode_t          bc;
+	compiler_func_t     compiler;
 
-	m_array_t *scopes;
-	void* stack[VM_STACK_MAX];
-	int32_t stack_top;
-	PC pc;
+	m_array_t*          scopes;
+	void*               stack[VM_STACK_MAX];
+	int32_t             stack_top;
+	PC                  pc;
 
-	bool terminated;
-	var_t* root;
+	bool                terminated;
+	var_t*              root;
 
-	m_array_t included;
+	m_array_t           included;
 
-	void (*on_init)(struct st_vm* vm);
-	m_array_t init_natives;
-	void (*on_close)(struct st_vm* vm);
-	m_array_t close_natives;
+	void                (*on_init)(struct st_vm* vm);
+	m_array_t           init_natives;
+	void                (*on_close)(struct st_vm* vm);
+	m_array_t           close_natives;
 
 	#ifdef MARIO_THREAD
-	pthread_mutex_t thread_lock;
-	isignal_t* isignal_head;
-	isignal_t* isignal_tail;
-	uint32_t isignal_num;
-	bool interrupted;
+	pthread_mutex_t     thread_lock;
+	isignal_t*          isignal_head;
+	isignal_t*          isignal_tail;
+	uint32_t            isignal_num;
+	bool                interrupted;
 	#endif
 
 	struct {
-		var_t** cache;
-		uint32_t size;
-		uint32_t used;
+		var_t**         cache;
+		uint32_t        size;
+		uint32_t        used;
 	} var_cache;
 
 	struct {
-		load_ncache_t* cache;
-		uint32_t size;
+		load_ncache_t*  cache;
+		uint32_t        size;
 	} load_ncache;
 
-	uint32_t this_strIndex;
+	uint32_t            this_strIndex;
 	struct {
-		var_t* var_Object;
-		var_t* var_String;
-		var_t* var_Number;
-		var_t* var_Error;
-		var_t* var_Array;
-		var_t* var_true;
-		var_t* var_false;
-		var_t* var_null;
+		var_t*          var_Object;
+		var_t*          var_String;
+		var_t*          var_Number;
+		var_t*          var_Error;
+		var_t*          var_Array;
+		var_t*          var_true;
+		var_t*          var_false;
+		var_t*          var_null;
 	} builtin_vars;
 
 	// GC structure
 	struct {
-		bool is_doing_gc;
-		uint32_t gc_trig_var_num; //trigger gc when var num reach this value.
-		uint32_t free_var_buffer_num; // number of free var buffer.
-		var_t* gc_vars;
-		var_t* gc_vars_tail;
-		uint32_t gc_vars_num;
+		bool            is_doing_gc;
+		uint32_t        gc_trig_var_num; //trigger gc when var num reach this value.
+		uint32_t        free_var_buffer_num; // number of free var buffer.
+		var_t*          gc_vars;
+		var_t*          gc_vars_tail;
+		uint32_t        gc_vars_num;
 	} gc;
 
-	var_t* free_var_buffer;
-	uint32_t free_var_buffer_num;
+	var_t*              free_var_buffer;
+	uint32_t            free_var_buffer_num;
 } vm_t;
 
 typedef mstr_t* (*load_m_func_t)(struct st_vm *, const char* jsname);
 extern load_m_func_t _load_m_func;
 
-node_t* node_new(vm_t* vm, const char* name, var_t* var);
-void node_free(void* p);
-var_t* node_replace(node_t* node, var_t* v);
+node_t*     node_new(vm_t* vm, const char* name, var_t* var);
+void        node_free(void* p);
+var_t*      node_replace(node_t* node, var_t* v);
 
-void var_remove_all(var_t* var);
-node_t* var_add(var_t* var, const char* name, var_t* add);
-node_t* var_add_head(var_t* var, const char* name, var_t* add);
-node_t* var_find_own_member(var_t* var, const char*name);
-var_t* var_find_own_member_var(var_t* var, const char*name);
-node_t* var_find_member_create(var_t* var, const char*name);
-node_t* var_get(var_t* var, int32_t index);
+void        var_remove_all(var_t* var);
+node_t*     var_add(var_t* var, const char* name, var_t* add);
+node_t*     var_add_head(var_t* var, const char* name, var_t* add);
+node_t*     var_find_own_member(var_t* var, const char*name);
+var_t*      var_find_own_member_var(var_t* var, const char*name);
+node_t*     var_find_member_create(var_t* var, const char*name);
+node_t*     var_get(var_t* var, int32_t index);
 
-node_t* var_array_get(var_t* var, int32_t index);
-var_t* var_array_get_var(var_t* var, int32_t index);
-node_t* var_array_add(var_t* var, var_t* add);
-node_t* var_array_add_head(var_t* var, var_t* add);
-node_t* var_array_set(var_t* var, int32_t index, var_t* set_var);
-node_t* var_array_remove(var_t* var, int32_t index);
-void var_array_del(var_t* var, int32_t index);
-void var_array_reverse(var_t* var);
-uint32_t var_array_size(var_t* var);
-void var_instance_from(var_t* var, var_t* src);
-void var_clean(var_t* var);
+node_t*     var_array_get(var_t* var, int32_t index);
+var_t*      var_array_get_var(var_t* var, int32_t index);
+node_t*     var_array_add(var_t* var, var_t* add);
+node_t*     var_array_add_head(var_t* var, var_t* add);
+node_t*     var_array_set(var_t* var, int32_t index, var_t* set_var);
+node_t*     var_array_remove(var_t* var, int32_t index);
+void        var_array_del(var_t* var, int32_t index);
+void        var_array_reverse(var_t* var);
+uint32_t    var_array_size(var_t* var);
+void        var_instance_from(var_t* var, var_t* src);
+void        var_clean(var_t* var);
 
-var_t* var_ref(var_t* var);
-void var_unref(var_t* var);
+var_t*      var_ref(var_t* var);
+void        var_unref(var_t* var);
 
 //#define var_ref(var) ({ ++(var)->refs; var; })
 //#define var_unref(var, del) ({ --(var)->refs; if((var)->refs <= 0 && (del)) var_free((var)); })
 
-var_t* var_new(vm_t* vm);
-var_t* var_new_block(vm_t* vm);
-var_t* var_new_array(vm_t* vm);
-var_t* var_new_int(vm_t* vm, int i);
-var_t* var_new_null(vm_t* vm);
-var_t* var_new_bool(vm_t* vm, bool b);
-var_t* var_new_obj_no_proto(vm_t* vm, void*p, free_func_t fr);
-var_t* var_new_obj(vm_t* vm, var_t* proto, void*p, free_func_t fr);
-var_t* var_new_float(vm_t* vm, float i);
-var_t* var_new_str(vm_t* vm, const char* s);
-var_t* var_new_str2(vm_t* vm, const char* s, uint32_t len);
+var_t*      var_new(vm_t* vm);
+var_t*      var_new_block(vm_t* vm);
+var_t*      var_new_array(vm_t* vm);
+var_t*      var_new_int(vm_t* vm, int i);
+var_t*      var_new_null(vm_t* vm);
+var_t*      var_new_bool(vm_t* vm, bool b);
+var_t*      var_new_obj_no_proto(vm_t* vm, void*p, free_func_t fr);
+var_t*      var_new_obj(vm_t* vm, var_t* proto, void*p, free_func_t fr);
+var_t*      var_new_float(vm_t* vm, float i);
+var_t*      var_new_str(vm_t* vm, const char* s);
+var_t*      var_new_str2(vm_t* vm, const char* s, uint32_t len);
 const char* var_get_str(var_t* var);
-var_t* var_set_str(var_t* var, const char* v);
-int var_get_int(var_t* var);
-var_t* var_set_int(var_t* var, int v);
-bool var_get_bool(var_t* var);
-float var_get_float(var_t* var);
-var_t* var_set_float(var_t* var, float v);
-func_t* var_get_func(var_t* var);
-var_t* var_get_prototype(var_t* var);
-void var_set_prototype(var_t* var, var_t* proto);
-bool var_instanceof(var_t* var, var_t* proto);
-node_t* var_find_member(var_t* obj, const char* name);
-var_t* var_find_member_var(var_t* obj, const char* name);
-var_t* var_find_own_member_var(var_t* obj, const char* name);
+var_t*      var_set_str(var_t* var, const char* v);
+int         var_get_int(var_t* var);
+var_t*      var_set_int(var_t* var, int v);
+bool        var_get_bool(var_t* var);
+float       var_get_float(var_t* var);
+var_t*      var_set_float(var_t* var, float v);
+func_t*     var_get_func(var_t* var);
+var_t*      var_get_prototype(var_t* var);
+void        var_set_prototype(var_t* var, var_t* proto);
+bool        var_instanceof(var_t* var, var_t* proto);
+node_t*     var_find_member(var_t* obj, const char* name);
+var_t*      var_find_member_var(var_t* obj, const char* name);
+var_t*      var_find_own_member_var(var_t* obj, const char* name);
 
-void var_to_json_str(var_t*, mstr_t*, int);
-void var_to_str(var_t*, mstr_t*);
+void        var_to_json_str(var_t*, mstr_t*, int);
+void        var_to_str(var_t*, mstr_t*);
 
-void vm_push(vm_t* vm, var_t* var);
-void vm_push_node(vm_t* vm, node_t* node);
+void        vm_push(vm_t* vm, var_t* var);
+void        vm_push_node(vm_t* vm, node_t* node);
 
-vm_t* vm_new(compiler_func_t compiler, uint32_t var_cache_size, uint32_t load_ncache_size);
-node_t* vm_load_node(vm_t* vm, const char* name, bool create);
+vm_t*       vm_new(compiler_func_t compiler, uint32_t var_cache_size, uint32_t load_ncache_size);
+node_t*     vm_load_node(vm_t* vm, const char* name, bool create);
 
-void vm_init(vm_t* vm,
-	void (*on_init)(struct st_vm* vm),
-	void (*on_close)(struct st_vm* vm)
+void        vm_init(vm_t* vm,
+		void (*on_init)(struct st_vm* vm),
+		void (*on_close)(struct st_vm* vm)
 );
 
-vm_t* vm_from(vm_t* vm);
+vm_t*       vm_from(vm_t* vm);
 
-bool vm_load(vm_t* vm, const char* s);
-bool vm_load_run(vm_t* vm, const char* s);
-bool vm_load_run_native(vm_t* vm, const char* s);
-bool vm_run(vm_t* vm);
-void vm_close(vm_t* vm);
-void vm_terminate(vm_t* vm);
+bool        vm_load(vm_t* vm, const char* s);
+bool        vm_load_run(vm_t* vm, const char* s);
+bool        vm_load_run_native(vm_t* vm, const char* s);
+bool        vm_run(vm_t* vm);
+void        vm_close(vm_t* vm);
+void        vm_terminate(vm_t* vm);
 
-var_t* vm_new_class(vm_t* vm, const char* cls);
-var_t* new_obj(vm_t* vm, const char* cls_name, int arg_num);
-void    vm_throw(vm_t* vm, const char* format, ...);
-node_t* vm_find(vm_t* vm, const char* name);
-node_t* vm_find_in_class(var_t* var, const char* name);
-node_t* vm_reg_var(vm_t* vm, var_t* cls, const char* name, var_t* var, bool be_const);
-node_t* vm_reg_static(vm_t* vm, var_t* cls, const char* decl, native_func_t native, void* data);
-node_t* vm_reg_native(vm_t* vm, var_t* cls, const char* decl, native_func_t native, void* data);
-void vm_mark_func_scopes(vm_t* vm, var_t* func);
-void vm_reg_init(vm_t* vm, void (*func)(void*), void* data);
-void vm_reg_close(vm_t* vm, void (*func)(void*), void* data);
+var_t*      vm_new_class(vm_t* vm, const char* cls);
+var_t*      new_obj(vm_t* vm, const char* cls_name, int arg_num);
+void        vm_throw(vm_t* vm, const char* format, ...);
+node_t*     vm_find(vm_t* vm, const char* name);
+node_t*     vm_find_in_class(var_t* var, const char* name);
+node_t*     vm_reg_var(vm_t* vm, var_t* cls, const char* name, var_t* var, bool be_const);
+node_t*     vm_reg_static(vm_t* vm, var_t* cls, const char* decl, native_func_t native, void* data);
+node_t*     vm_reg_native(vm_t* vm, var_t* cls, const char* decl, native_func_t native, void* data);
+void        vm_mark_func_scopes(vm_t* vm, var_t* func);
+void        vm_reg_init(vm_t* vm, void (*func)(void*), void* data);
+void        vm_reg_close(vm_t* vm, void (*func)(void*), void* data);
 
-var_t* get_obj(var_t* obj, const char* name);
-void* get_raw(var_t* obj, const char* name);
+var_t*      get_obj(var_t* obj, const char* name);
+void*       get_raw(var_t* obj, const char* name);
 const char* get_str(var_t* obj, const char* name);
-int get_int(var_t* obj, const char* name);
-float get_float(var_t* obj, const char* name);
-bool get_bool(var_t* obj, const char* name);
-var_t* get_obj_member(var_t* obj, const char* name);
-var_t* set_obj_member(var_t* obj, const char* name, var_t* var);
+int         get_int(var_t* obj, const char* name);
+float       get_float(var_t* obj, const char* name);
+bool        get_bool(var_t* obj, const char* name);
+var_t*      get_obj_member(var_t* obj, const char* name);
+var_t*      set_obj_member(var_t* obj, const char* name, var_t* var);
 
-var_t* get_func_args(var_t* env);
-uint32_t get_func_args_num(var_t* env);
-var_t* get_func_arg(var_t* env, uint32_t index);
-int get_func_arg_int(var_t* env, uint32_t index);
-bool get_func_arg_bool(var_t* env, uint32_t index);
-float get_func_arg_float(var_t* env, uint32_t index);
+var_t*      get_func_args(var_t* env);
+uint32_t    get_func_args_num(var_t* env);
+var_t*      get_func_arg(var_t* env, uint32_t index);
+int         get_func_arg_int(var_t* env, uint32_t index);
+bool        get_func_arg_bool(var_t* env, uint32_t index);
+float       get_func_arg_float(var_t* env, uint32_t index);
 const char* get_func_arg_str(var_t* env, uint32_t index);
-var_t* call_m_func(vm_t* vm, var_t* obj, var_t* func, var_t* args);
-var_t* call_m_func_by_name(vm_t* vm, var_t* obj, const char* func_name, var_t* args);
+var_t*      call_m_func(vm_t* vm, var_t* obj, var_t* func, var_t* args);
+var_t*      call_m_func_by_name(vm_t* vm, var_t* obj, const char* func_name, var_t* args);
 
-bool interrupt(vm_t* vm, var_t* obj, var_t* func, const char* msg);
-bool interrupt_by_name(vm_t* vm, var_t* obj, const char* func_name, const char* msg);
+bool        interrupt(vm_t* vm, var_t* obj, var_t* func, const char* msg);
+bool        interrupt_by_name(vm_t* vm, var_t* obj, const char* func_name, const char* msg);
 
 extern var_t* json_parse(vm_t* vm, const char* str);
 
