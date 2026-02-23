@@ -4377,29 +4377,6 @@ vm_t* vm_from(vm_t* vm) {
 	return ret;
 }
 
-/*static var_t* native_debug(vm_t* vm, var_t* env, void* data) {
-	(void)vm; (void)data;
-
-	var_t* args = get_func_args(env); 
-	mstr_t* ret = mstr_new("");
-	mstr_t* str = mstr_new("");
-	uint32_t sz = var_array_size(args);
-	uint32_t i;
-	for(i=0; i<sz; ++i) {
-		node_t* n = var_array_get(args, i);
-		if(n != NULL) {
-			var_to_str(n->var, str);
-			mstr_append(ret, str->cstr);
-		}
-	}
-	mstr_free(str);
-	mstr_add(ret, '\n');
-	dout(ret->cstr);
-	mstr_free(ret);
-	return NULL;
-}
-*/
-
 vm_t* vm_new(compiler_func_t compiler, uint32_t var_cache_size, uint32_t load_ncache_size) {
 	vm_t* vm = (vm_t*)mario_malloc(sizeof(vm_t));
 	memset(vm, 0, sizeof(vm_t));
@@ -4449,7 +4426,6 @@ vm_t* vm_new(compiler_func_t compiler, uint32_t var_cache_size, uint32_t load_nc
 	//var_add(vm->root, "", vm->builtin_vars.var_null);
 	var_ref(vm->builtin_vars.var_null);
 
-	//vm_reg_static(vm, NULL, "debug()", native_debug, NULL);
 	return vm;
 }
 
