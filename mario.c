@@ -3048,7 +3048,15 @@ static bool func_call(vm_t* vm, var_t* obj, var_t* func_var, int arg_num) {
 	var_t *env = var_new_obj_no_proto(vm, NULL, NULL);
 	var_t* args = var_new_array(vm);
 	var_add(env, "arguments", args);
+	if(func_var == NULL) {
+		mario_debug("func_call: func_var is NULL!");
+		return false;
+	}
 	func_t* func = var_get_func(func_var);
+	if(func == NULL) {
+		mario_debug("func_call: func is NULL!");
+		return false;
+	}
 	if(obj == NULL) {
 		//obj = vm->root;
 	}
@@ -3532,8 +3540,14 @@ var_t* call_m_func(vm_t* vm, var_t* obj, var_t* func, var_t* args) {
 	if(args != NULL) {
 		// For now, we'll assume args is an array-like object with numeric indices
 		// TODO: Implement proper hash map iteration for args
-		// For simplicity, we'll just pass 0 arguments
-		arg_num = 0;
+		// Push arguments onto the stack
+		arg_num = var_array_size(args);
+		for(int i = arg_num - 1; i >= 0; i--) {
+			node_t* node = var_array_get(args, i);
+			if(node && node->var) {
+				vm_push(vm, node->var);
+			}
+		}
 	}
 
 	while(vm->gc.is_doing_gc);
@@ -4167,6 +4181,12 @@ static inline void handle_asign(vm_t* vm, PC ins, opr_code_t instr, uint32_t off
 	register PC* code = vm->bc.code_buf;
 	var_t* v = vm_pop2(vm);
 	node_t* n = vm_pop2node(vm);
+	if(n == NULL) {
+		mario_debug("Error: Can not find variable: '%s'!\n", n->name);
+		var_unref(v);
+		return;
+	}
+
 	bool modi = (!n->be_const || n->var->type == V_UNDEF);
 	var_unref(n->var);
 	if(modi) {
