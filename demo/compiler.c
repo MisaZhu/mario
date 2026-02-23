@@ -933,15 +933,13 @@ bool stmt_return(lex_t* l, bytecode_t* bc) {
 }
 
 bool statement(lex_t* l, bytecode_t* bc) {
-	bool pop = true;
+	bool pop = false;
 
 	if(l->tk == '\n') {
 		lex_skip_empty(l);
-		pop = false;
 	}
 	else if (l->tk=='{') { /* A block of code */
 		if(!stmt_block(l, bc, false)) return false;
-		pop = false;
 	}
 	else if (l->tk == LEX_STR || 
 			l->tk == LEX_INT || l->tk == LEX_FLOAT ||
@@ -954,38 +952,31 @@ bool statement(lex_t* l, bytecode_t* bc) {
 		if(!base(l, bc)) return false;
 		if(is_stmt_end(l->tk))
 			if(!lex_chkread_stmt_end(l)) return false;
+		pop = true;
 	}
 	else if (l->tk == LEX_R_CONST || l->tk == LEX_R_SAFE_VAR) {
 		if(!stmt_var(l, bc)) return false; 
-		pop = false;
 	}
 	else if(l->tk == LEX_R_FUNCTION) {
 		if(!stmt_function(l, bc)) return false; 
-		pop = false;
 	}
 	else if (l->tk == LEX_R_RETURN) {
 		if(!stmt_return(l, bc)) return false;
-		pop = false;
 	} 
 	else if (l->tk == LEX_R_IF) {
 		if(!stmt_if(l, bc)) return false;
-		pop = false;
 	}
 	else if (l->tk == LEX_R_WHILE) {
 		if(!stmt_while(l, bc)) return false;
-		pop = false;
 	}
 	else if (l->tk==LEX_R_FOR) {
 		if(!stmt_for(l, bc)) return false;
-		pop = false;
 	}
 	else if(l->tk == LEX_R_BREAK) {
 		if(!stmt_break(l, bc)) return false;
-		pop = false;
 	}
 	else if(l->tk == LEX_R_CONTINUE) {
 		if(!stmt_continue(l, bc)) return false;
-		pop = false;
 	}
 	else {
 		mario_printf("Error: don't understand '%s' ", l->tk_str->cstr);
