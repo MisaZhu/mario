@@ -17,17 +17,7 @@ extern void  (*_platform_out)(const char*);
 
 /**====== memory functions.======*/
 
-void        mario_mem_init();
-void        mario_mem_quit();
-
-#ifdef MARIO_DEBUG
-extern void* mario_malloc_raw(uint32_t size, const char* file, uint32_t line);
-#define mario_malloc(size)  mario_malloc_raw(size, __FILE__, __LINE__)
-#else
-extern void* mario_malloc_raw(uint32_t size);
-#define mario_malloc(size)  mario_malloc_raw(size)
-#endif
-
+extern void* mario_malloc(uint32_t size);
 extern void  mario_free(void* p);
 extern void* _realloc(void* p, uint32_t old_size, uint32_t new_size);
 

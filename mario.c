@@ -14,100 +14,13 @@ void  (*_platform_free)(void* p) = NULL;
 
 void  (*_platform_out)(const char*) = NULL;
 
-/**======memory functions======*/
-#ifdef MARIO_DEBUG
-typedef struct mem_block {
-	void* p;
-	uint32_t size;
-	const char* file;
-	uint32_t line;
-	struct mem_block *prev;
-	struct mem_block *next;
-} mem_block_t;
-
-static mem_block_t* _mem_head = NULL;
-
-inline void* mario_malloc_raw(uint32_t size, const char* file, uint32_t line) {
-	if(size == 0)
-		return NULL;
-
-	mem_block_t* block = (mem_block_t*)_platform_malloc(sizeof(mem_block_t));
-	block->p = _platform_malloc(size);
-	block->size = size;
-	block->file = file;
-	block->line = line;
-	block->prev = NULL;
-
-	if(_mem_head != NULL)
-		_mem_head->prev = block;
-	block->next = _mem_head;
-	_mem_head = block;
-	return block->p;
-}
-
-static inline void mario_free_raw(void* p) {
-	mem_block_t* block = _mem_head;	
-	while(block != NULL) {
-		if(block->p == p) // found.
-			break;
-		block = block->next;
-	}
-
-	if(block == NULL) {
-		return;
-	}
-	
-	if(block->next != NULL)
-		block->next->prev = block->prev;
-	if(block->prev != NULL)
-		block->prev->next = block->next;
-	
-	if(block == _mem_head)
-		_mem_head = block->next;
-
-	_platform_free(block->p);
-	_platform_free(block);
-}
-
-static void raw_mem_init() { 
-	_mem_head = NULL;	
-}
-
-static void raw_mem_quit() { 
-	mem_block_t* block = _mem_head;	
-	if(block != NULL) { // mem clean
-		mario_debug("memory is leaking!!!\n");
-		while(block != NULL) {
-			mario_debug(" %s, %d, 0x%x, size=%d\n", block->file, block->line, block->p, block->size);
-			block = block->next;
-		}
-	}
-	else {
-		mario_debug("memory is clean.\n");
-	}
-}
-
-#else
-
-static void raw_mem_init() { 
-}
-
-static void raw_mem_quit() { 
-}
-
-inline void* mario_malloc_raw(uint32_t size) {
+inline void* mario_malloc(uint32_t size) {
 	return _platform_malloc(size);
 }
 
-static inline void mario_free_raw(void* p) {
-	_platform_free(p);
-}
-
-#endif
-
 inline void mario_free(void* p) {
 	if(p != NULL)
-		mario_free_raw(p);
+		_platform_free(p);
 }
 
 void  free_none(void* p) { }
@@ -119,14 +32,6 @@ void *_realloc(void* p, uint32_t old_size, uint32_t new_size) {
 		mario_free(p);
 	}
 	return np;
-}
-
-void mario_mem_init(void) {
-	raw_mem_init();
-}
-
-void mario_mem_quit(void) {
-	raw_mem_quit();
 }
 
 /**======debug functions======*/
@@ -3070,8 +2975,9 @@ var_t* call_m_func_by_name(vm_t* vm, var_t* obj, const char* func_name, var_t* a
 	if(obj == NULL)
 		obj = vm->root;
 	node_t* func = var_find_member(obj, func_name);
+
 	if(func == NULL || func->var->is_func == 0) {
-		mario_debug("Interrupt function '%s' not defined!\n", func_name);
+		mario_printf("Interrupt function '%s' not defined!\n", func_name);
 		return NULL;
 	}
 	return call_m_func(vm, obj, func->var, args);
