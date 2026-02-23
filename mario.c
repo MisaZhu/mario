@@ -1270,17 +1270,34 @@ static var_t* json_parse_factor(vm_t* vm, lex_t *l) {
 		var_t* obj = var_new_obj_no_proto(vm, NULL, NULL);
 		while(l->tk != '}') {
 			mstr_t* id = mstr_new(l->tk_str->cstr);
-			if(l->tk == LEX_STR)
-				lex_js_chkread(l, LEX_STR);
-			else
-				lex_js_chkread(l, LEX_ID);
+			if(l->tk == LEX_STR) {
+				if(!lex_js_chkread(l, LEX_STR)) {
+					mstr_free(id);
+					var_unref(obj);
+					return var_new(vm);
+				}
+			} else {
+				if(!lex_js_chkread(l, LEX_ID)) {
+					mstr_free(id);
+					var_unref(obj);
+					return var_new(vm);
+				}
+			}
 
-			lex_js_chkread(l, ':');
+			if(!lex_js_chkread(l, ':')) {
+				mstr_free(id);
+				var_unref(obj);
+				return var_new(vm);
+			}
 			var_t* v = json_parse_factor(vm, l);
 			var_add(obj, id->cstr, v);
 			mstr_free(id);
-			if(l->tk != '}')
-				lex_js_chkread(l, ',');
+			if(l->tk != '}') {
+				if(!lex_js_chkread(l, ',')) {
+					var_unref(obj);
+					return var_new(vm);
+				}
+			}
 		}
 		lex_js_chkread(l, '}');
 		return obj;
