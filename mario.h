@@ -361,20 +361,6 @@ typedef struct st_node {
 	var_t*              var;
 } node_t;
 
-
-#ifdef MARIO_THREAD
-#include <pthread.h>
-
-typedef struct st_isignal {
-	var_t*              obj;
-	var_t*              handle_func;
-	mstr_t*             handle_func_name;
-	mstr_t*             msg;
-	struct st_isignal*  next;
-	struct st_isignal*  prev;
-} isignal_t;
-#endif
-
 typedef struct st_ic_entry {
     m_array_t*          old_instr_pcs;     
     PC                  old_instr;      
@@ -409,14 +395,6 @@ typedef struct st_vm {
 	m_array_t           init_natives;
 	void                (*on_close)(struct st_vm* vm);
 	m_array_t           close_natives;
-
-	#ifdef MARIO_THREAD
-	pthread_mutex_t     thread_lock;
-	isignal_t*          isignal_head;
-	isignal_t*          isignal_tail;
-	uint32_t            isignal_num;
-	bool                interrupted;
-	#endif
 
 	struct {
 		var_t**         cache;

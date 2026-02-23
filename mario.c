@@ -3,10 +3,6 @@
 #include <stdio.h>
 #include <stdarg.h>
 
-#ifdef MRCIO_THREAD
-#include <pthread.h>
-#endif
-
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -31,33 +27,10 @@ typedef struct mem_block {
 
 static mem_block_t* _mem_head = NULL;
 
-#ifdef MARIO_THREAD
-static pthread_mutex_t _mem_lock;
-static inline void mem_lock_init() {
-	pthread_mutex_init(&_mem_lock, NULL);
-}
-static inline void mem_lock_destroy() {
-	pthread_mutex_destroy(&_mem_lock);
-}
-static inline void mem_lock() {
-	pthread_mutex_lock(&_mem_lock);
-}
-static inline void mem_unlock() {
-	pthread_mutex_unlock(&_mem_lock);
-}
-
-#else
-static inline void mem_lock_destroy() { }
-static inline void mem_lock_init() { }
-static inline void mem_lock() { }
-static inline void mem_unlock() { }
-#endif
-
 inline void* mario_malloc_raw(uint32_t size, const char* file, uint32_t line) {
 	if(size == 0)
 		return NULL;
 
-	mem_lock();
 	mem_block_t* block = (mem_block_t*)_platform_malloc(sizeof(mem_block_t));
 	block->p = _platform_malloc(size);
 	block->size = size;
@@ -69,12 +42,10 @@ inline void* mario_malloc_raw(uint32_t size, const char* file, uint32_t line) {
 		_mem_head->prev = block;
 	block->next = _mem_head;
 	_mem_head = block;
-	mem_unlock();
 	return block->p;
 }
 
 static inline void mario_free_raw(void* p) {
-	mem_lock();
 	mem_block_t* block = _mem_head;	
 	while(block != NULL) {
 		if(block->p == p) // found.
@@ -83,7 +54,6 @@ static inline void mario_free_raw(void* p) {
 	}
 
 	if(block == NULL) {
-		mem_unlock();
 		return;
 	}
 	
@@ -97,16 +67,13 @@ static inline void mario_free_raw(void* p) {
 
 	_platform_free(block->p);
 	_platform_free(block);
-	mem_unlock();
 }
 
 static void raw_mem_init() { 
 	_mem_head = NULL;	
-	mem_lock_init();
 }
 
 static void raw_mem_quit() { 
-	mem_lock();
 	mem_block_t* block = _mem_head;	
 	if(block != NULL) { // mem clean
 		mario_debug("memory is leaking!!!\n");
@@ -118,8 +85,6 @@ static void raw_mem_quit() {
 	else {
 		mario_debug("memory is clean.\n");
 	}
-	mem_unlock();
-	mem_lock_destroy();
 }
 
 #else
@@ -1563,17 +1528,6 @@ static inline void gc_mark_stack(vm_t* vm, bool mark) {
 	}
 }
 
-static inline void gc_mark_isignal(vm_t* vm, bool mark) {
-#ifdef MARIO_THREAD
-	isignal_t* sig = vm->isignal_head;
-	while(sig != NULL) {
-		gc_mark(sig->handle_func, mark);
-		gc_mark(sig->obj, mark);
-		sig = sig->next;
-	}
-#endif
-}
-
 void var_free(void* p) {
 	var_t* var = (var_t*)p;
 	if(var_empty(var))
@@ -1643,8 +1597,6 @@ static inline void gc_vars(vm_t* vm) {
 	gc_mark(vm->root, true); //mark all rooted vars
 	//mario_debug("gc marking stack\n");
 	gc_mark_stack(vm, true); //mark all stacked vars
-	//mario_debug("gc marking interrupt\n");
-	gc_mark_isignal(vm, true); //mark all interrupt signal vars
 	//mario_debug("gc marking cache\n");
 	gc_mark_cache(vm, true); //mark all cached vars
 
@@ -1665,8 +1617,6 @@ static inline void gc_vars(vm_t* vm) {
 	gc_mark(vm->root, false); //unmark all rooted vars
 	//mario_debug("gc unmarking stack\n");
 	gc_mark_stack(vm, false); //unmark all stacked vars
-	//mario_debug("gc unmarking interrupt\n");
-	gc_mark_isignal(vm, false); //unmark all interrupt signal vars
 	//mario_debug("gc unmarking cache\n");
 	gc_mark_cache(vm, false); //unmark all cached vars
 
@@ -3127,157 +3077,6 @@ var_t* call_m_func_by_name(vm_t* vm, var_t* obj, const char* func_name, var_t* a
 	return call_m_func(vm, obj, func->var, args);
 }
 
-#ifdef MARIO_THREAD
-/**
-interrupter
-*/
-
-#define MAX_ISIGNAL 128
-
-static bool interrupt_raw(vm_t* vm, var_t* obj, const char* func_name, var_t* func, const char* msg) {
-	while(vm->interrupted) { } // can not interrupt another interrupter.
-
-	pthread_mutex_lock(&vm->thread_lock);
-	if(vm->isignal_num >= MAX_ISIGNAL) {
-		mario_debug("Too many interrupt signals!\n");
-		pthread_mutex_unlock(&vm->thread_lock);
-		return false;
-	}
-
-	isignal_t* is = (isignal_t*)mario_malloc(sizeof(isignal_t));
-	if(is == NULL) {
-		mario_debug("Interrupt signal input error!\n");
-		pthread_mutex_unlock(&vm->thread_lock);
-		return false;
-	}
-
-	is->next = NULL;
-	is->prev = NULL;
-	//is->obj = var_ref(obj);
-	is->obj = obj;
-
-	if(func != NULL)
-		is->handle_func = var_ref(func);
-	else
-		is->handle_func = NULL;
-
-	if(func_name != NULL && func_name[0] != 0) 
-		is->handle_func_name = mstr_new(func_name);
-	else
-		is->handle_func_name = NULL;
-
-	if(msg != NULL)
-		is->msg = mstr_new(msg);
-	else
-		is->msg = NULL;
-
-	if(vm->isignal_tail == NULL) {
-		vm->isignal_head = is;
-		vm->isignal_tail = is;
-	}
-	else {
-		vm->isignal_tail->next = is;
-		is->prev = vm->isignal_tail;
-		vm->isignal_tail = is;
-	}
-
-	vm->isignal_num++;
-	pthread_mutex_unlock(&vm->thread_lock);
-	return true;
-}
-
-bool interrupt_by_name(vm_t* vm, var_t* obj, const char* func_name, const char* msg) {
-	return interrupt_raw(vm, obj, func_name, NULL, msg);
-}
-
-bool interrupt(vm_t* vm, var_t* obj, var_t* func, const char* msg) {
-	return interrupt_raw(vm, obj, NULL, func, msg);
-}
-
-void try_interrupter(vm_t* vm) {
-	if(vm->isignal_head == NULL || vm->interrupted) {
-		return;
-	}
-
-	pthread_mutex_lock(&vm->thread_lock);
-	vm->interrupted = true;
-
-	isignal_t* sig = vm->isignal_head;
-		
-	var_t* func = NULL;
-
-	while(sig != NULL) {
-		if(sig->handle_func != NULL) {
-			func = sig->handle_func;
-			break;
-		}
-		else if(sig->handle_func_name != NULL) {
-			//if func undefined yet, keep it and try next sig
-			node_t* func_node = var_find_member(sig->obj, sig->handle_func_name->cstr);
-			if(func_node != NULL && func_node->var->is_func) { 
-				func = var_ref(func_node->var);
-				break;
-			}
-		}
-		sig = sig->next;
-	}
-
-	if(func == NULL || sig == NULL) {
-		vm->interrupted = false;
-		pthread_mutex_unlock(&vm->thread_lock);
-		return;
-	}
-	
-	var_t* args = var_new(vm);
-	if(sig->msg != NULL) {
-		if(sig->msg->cstr == NULL)
-			var_add(args, "", var_new_str(vm, ""));
-		else
-			var_add(args, "", var_new_str(vm, sig->msg->cstr));
-		mstr_free(sig->msg);
-	}
-
-	vm_push(vm, args);
-	var_t* ret = call_m_func(vm, sig->obj, func, args);
-	vm_pop(vm);
-	//var_unref(args);
-
-	if(ret != NULL)
-		var_unref(ret);
-
-	//pop this sig from queue.
-	if(sig->prev == NULL) 
-		vm->isignal_head = sig->next;
-	else 
-		sig->prev->next = sig->next;
-
-	if(sig->next == NULL)
-		vm->isignal_tail = sig->prev;
-	else
-		sig->next->prev = sig->prev;
-
-	//var_unref(sig->obj);
-	var_unref(func);
-	if(sig->handle_func_name != NULL)
-		mstr_free(sig->handle_func_name);
-	mario_free(sig);
-	vm->isignal_num--;
-	vm->interrupted = false;
-	pthread_mutex_unlock(&vm->thread_lock);
-}
-
-#else
-
-bool interrupt(vm_t* vm, var_t* obj, var_t* func, const char* msg) {
-	return false;
-}	
-
-bool interrupt_by_name(vm_t* vm, var_t* obj, const char* func_name, const char* msg) {
-	return false;
-}	
-
-#endif
-
 /*****************/
 
 var_t* vm_new_class(vm_t* vm, const char* cls) {
@@ -3843,10 +3642,6 @@ static inline void handle_call(vm_t* vm, PC ins, opr_code_t instr, uint32_t offs
 
 	if(unrefObj && obj != NULL)
 		var_unref(obj);
-
-#ifdef MARIO_THREAD
-	try_interrupter(vm);
-#endif
 }
 
 static inline void handle_member(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
@@ -4188,11 +3983,6 @@ void vm_close(vm_t* vm) {
 	var_unref(vm->builtin_vars.var_false);
 	var_unref(vm->builtin_vars.var_null);
 
-
-	#ifdef MARIO_THREAD
-	pthread_mutex_destroy(&vm->thread_lock);
-	#endif
-
 	var_cache_free(vm);
 	load_ncache_free(vm);
 
@@ -4398,15 +4188,6 @@ vm_t* vm_new(compiler_func_t compiler, uint32_t var_cache_size, uint32_t load_nc
 
 	var_cache_init(vm);
 	load_ncache_init(vm);
-
-	#ifdef MARIO_THREAD
-	pthread_mutex_init(&vm->thread_lock, NULL);
-
-	vm->isignal_head = NULL;
-	vm->isignal_tail = NULL;
-	vm->isignal_num = 0;
-	vm->interrupted = false;
-	#endif
 
 	array_init(&vm->included);	
 	array_init(&vm->close_natives);	
