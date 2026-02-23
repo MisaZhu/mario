@@ -2902,13 +2902,17 @@ void vm_throw(vm_t* vm, const char *format, ...) {
 	vm_push(vm, err);
 
 	scope_t* try_sc = vm_get_try_catch_scope(vm);
-	if(try_sc == NULL)
+	if(try_sc == NULL) {
+		vm_pop(vm);
 		return;
+	}
 
 	while(true) {
 		scope_t* sc = vm_get_scope(vm);
-		if(sc == NULL)
+		if(sc == NULL) {
+			vm_pop(vm);
 			break;
+		}
 
 		if(sc->is_try) {
 			vm->pc = sc->pc;
@@ -4194,7 +4198,9 @@ static inline void handle_asign(vm_t* vm, PC ins, opr_code_t instr, uint32_t off
 	}
 	else {
 		mario_debug("Error: Can not change a const variable: '%s'!\n", n->name);
-		//vm_throw(vm, "can not change a const variable: '%s'!", n->name);
+		vm_throw(vm, "can not change a const variable: '%s'!", n->name);
+		var_unref(v);
+		return;
 	}
 
 	if((ins & INSTR_OPT_CACHE) == 0) {
@@ -4268,9 +4274,12 @@ static inline void handle_call(vm_t* vm, PC ins, opr_code_t instr, uint32_t offs
 			vm_pop(vm);
 			arg_num--;
 		}
-		vm_push(vm, var_new(vm));
+		//vm_push(vm, var_new(vm));
 		mario_debug("Error: can not find function '%s'!\n", name->cstr);
 		vm_throw(vm, "can not find function '%s'!", name->cstr);
+		mstr_free(name);
+		//vm_pop(vm);
+		return;
 	}
 	mstr_free(name);
 
