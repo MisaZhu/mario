@@ -96,8 +96,6 @@ int main(int argc, char** argv) {
 		return 1;
 	}
 
-	mario_mem_init();
-
 	fname = argv[argind];
 	vm_t* vm = vm_new(compile, VAR_CACHE_MAX_DEF, LOAD_NCACHE_MAX_DEF);
 	vm_init(vm, NULL, NULL);
@@ -124,6 +122,5 @@ int main(int argc, char** argv) {
 			vm_run(vm);
 	}
 	vm_close(vm);
-	mario_mem_quit();
 	return 0;
 }
