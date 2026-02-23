@@ -237,7 +237,7 @@ void mario_debug_pos(lex_t* l, int pos) {
 	mario_debug("(line: %d, col: %d)\n",  line, col);
 }
 
-void mario_error_pos(lex_t* l, int pos) {
+void compile_error_pos(lex_t* l, int pos) {
 	int line = 1;
 	int col;
 
@@ -989,7 +989,7 @@ bool statement(lex_t* l, bytecode_t* bc) {
 	}
 	else {
 		mario_printf("Error: don't understand '%s' ", l->tk_str->cstr);
-		mario_error_pos(l, -1);
+		compile_error_pos(l, -1);
 		return false;
 	}
 
@@ -1006,7 +1006,7 @@ bool compile(bytecode_t *bc, const char* input) {
 	while(lex.tk) {
 		if(!statement(&lex, bc)) {
 			mario_printf("Error: compile failed! '%s' ", lex.tk_str->cstr);
-			mario_error_pos(&lex, -1);
+			compile_error_pos(&lex, -1);
 			lex_release(&lex);
 			return false;
 		}
