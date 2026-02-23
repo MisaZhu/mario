@@ -1952,8 +1952,6 @@ static void gc_mark_callback(const char* key, void* value, void* user_data) {
 	if(!node_empty(node)) {
 		node->var->gc_marked = mark;
 		if(node->var->gc_marking == false) {
-			if(strcmp(node->name, "a") == 0)
-				mario_printf("gc mark var %s, %x, %d\n", node->name, node->var, node->var->is_func);
 			gc_mark(node->var, mark);
 		}
 	}
