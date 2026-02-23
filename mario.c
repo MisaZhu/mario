@@ -3054,11 +3054,15 @@ static bool func_call(vm_t* vm, var_t* obj, var_t* func_var, int arg_num) {
 	var_add(env, "arguments", args);
 	if(func_var == NULL) {
 		mario_debug("func_call: func_var is NULL!");
+		var_unref(env);
+		vm_push(vm, var_new(vm));
 		return false;
 	}
 	func_t* func = var_get_func(func_var);
 	if(func == NULL) {
 		mario_debug("func_call: func is NULL!");
+		var_unref(env);
+		vm_push(vm, var_new(vm));
 		return false;
 	}
 	if(obj == NULL) {
@@ -3122,12 +3126,13 @@ static bool func_call(vm_t* vm, var_t* obj, var_t* func_var, int arg_num) {
 		}
 		//scope's already poped with function return
 	}
+
 	if(ret == NULL)
 		ret = var_new(vm);
 	var_ref(ret);
 	vm_pop(vm);
-	vm_push(vm, ret);
 	ret->refs--;
+	vm_push(vm, ret);
 	return true;
 }
 
@@ -3542,21 +3547,22 @@ var_t* call_m_func(vm_t* vm, var_t* obj, var_t* func, var_t* args) {
 	//push args to stack.
 	int arg_num = 0;
 	if(args != NULL) {
-		// For now, we'll assume args is an array-like object with numeric indices
-		// TODO: Implement proper hash map iteration for args
 		// Push arguments onto the stack
 		arg_num = var_array_size(args);
 		for(int i = arg_num - 1; i >= 0; i--) {
 			node_t* node = var_array_get(args, i);
-			if(node && node->var) {
-				vm_push(vm, node->var);
-			}
+			if(node == NULL)
+				node = node_new(vm, NULL, NULL);
+			vm_push(vm, node->var);
 		}
 	}
 
 	while(vm->gc.is_doing_gc);
 	func_call(vm, obj, func, arg_num);
-	return vm_pop2(vm);
+	var_t* ret = vm_pop2(vm);
+	if(obj == ret)
+		ret->refs--;
+	return ret;
 }
 
 var_t* call_m_func_by_name(vm_t* vm, var_t* obj, const char* func_name, var_t* args) {
