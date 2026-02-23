@@ -4101,8 +4101,9 @@ static inline void handle_return(vm_t* vm, PC ins, opr_code_t instr, uint32_t of
 	var_t* ret = NULL;
 	if(instr == INSTR_RETURN) {
 		var_t* thisV = vm_this_in_scopes(vm);
-		if(thisV != NULL)
+		if(thisV != NULL) {
 			vm_push(vm, thisV);
+		}
 		else
 			vm_push(vm, var_new(vm));
 	}
