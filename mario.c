@@ -2113,7 +2113,6 @@ static inline void gc_vars(vm_t* vm) {
 	//mario_debug("gc unmarking cache\n");
 	gc_mark_cache(vm, false); //unmark all cached vars
 
-	mario_debug("gc recycle free vars\n");
 	//second step: move freed var to free_var_list for reusing.
 	v = vm->gc.gc_vars;
 	while(v != NULL) {
@@ -2124,7 +2123,6 @@ static inline void gc_vars(vm_t* vm) {
 		}
 		v = next;
 	}
-	mario_debug("gc_var done\n");
 }
 
 static inline void gc_free_free_vars(vm_t* vm, uint32_t buffer_num) {
@@ -2145,14 +2143,12 @@ static inline void gc(vm_t* vm, bool force) {
 		return;
 	if(!force && vm->gc.gc_vars_num < vm->gc.gc_trig_var_num)
 		return;
-	mario_debug("do gc ......\n");
+	mario_debug("gc ...... ");
 	vm->gc.is_doing_gc = true;
-	mario_debug("marking ......\n");
 	gc_vars(vm);
-	mario_debug("freeing ......");
 	gc_free_free_vars(vm, force ? 0:vm->gc.free_var_buffer_num);
 	vm->gc.is_doing_gc = false;
-	mario_debug(" gc done.\n");
+	mario_debug("done.\n");
 }
 
 static const char* get_typeof(var_t* var) {
