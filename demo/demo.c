@@ -62,7 +62,7 @@ bool _dump = false;
 static int doargs(int argc, char* argv[]) {
 	int c = 0;
 	while (c != -1) {
-		c = getopt (argc, argv, "ad?");
+		c = getopt (argc, argv, "a?");
 		if(c == -1)
 			break;
 
@@ -92,7 +92,7 @@ int main(int argc, char** argv) {
 
 	int argind = doargs(argc, argv);
 	if(argind < 0 || argind >= argc) {
-		mario_printf("Usage: demo (-d/-a) [source_file]!\n");
+		mario_printf("Usage: demo (-a) [source_file]!\n");
 		return 1;
 	}
 
