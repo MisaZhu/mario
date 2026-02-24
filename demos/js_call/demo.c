@@ -27,11 +27,16 @@ int main(int argc, char** argv) {
 	platform_init();
 
 	vm_t* vm = vm_new(compile, VAR_CACHE_MAX_DEF, LOAD_NCACHE_MAX_DEF);
+	if(vm == NULL) {
+		printf("Failed to create VM. make sure all platform functions(_platform_malloc, _platform_free, _platform_out) are set.\n");
+		return -1;
+	}
 	vm_init(vm, NULL, NULL); //initialize the vm enviroment.
 
 	bool res = vm_load_run(vm, js); 
 	if(!res) {
-		mario_printf("js_compile failed!\n");
+		printf("js_compile failed!\n");
+		vm_close(vm); //release
 		return -1;
 	}
 

@@ -3941,6 +3941,9 @@ vm_t* vm_from(vm_t* vm) {
 }
 
 vm_t* vm_new(compiler_func_t compiler, uint32_t var_cache_size, uint32_t load_ncache_size) {
+	if(_platform_malloc == NULL || _platform_free == NULL || _platform_out == NULL) //check platform functions
+		return NULL;
+
 	vm_t* vm = (vm_t*)mario_malloc(sizeof(vm_t));
 	memset(vm, 0, sizeof(vm_t));
 

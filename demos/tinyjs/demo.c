@@ -92,18 +92,24 @@ int main(int argc, char** argv) {
 
 	int argind = doargs(argc, argv);
 	if(argind < 0 || argind >= argc) {
-		mario_printf("Usage: demo (-a) [source_file]!\n");
+		printf("Usage: demo (-a) [source_file]!\n");
 		return 1;
 	}
-
 	fname = argv[argind];
+
 	vm_t* vm = vm_new(compile, VAR_CACHE_MAX_DEF, LOAD_NCACHE_MAX_DEF);
+	if(vm == NULL) {
+		printf("Failed to create VM. make sure all platform functions(_platform_malloc, _platform_free, _platform_out) are set.\n");
+		return -1;
+	}
 	vm_init(vm, NULL, NULL);
+
 	vm_reg_static(vm, NULL, "print()", native_print, NULL);
 
 	char* s = load_script(fname);
 	if(s == NULL) {
 		mario_printf("Load script failed!\n");
+		vm_close(vm);
 		return 1;
 	}
 
