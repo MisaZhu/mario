@@ -176,22 +176,39 @@ void lex_get_js_str(lex_t* lex) {
 }
 
 void lex_get_reserved_word(lex_t *lex) {
-	if (strcmp(lex->tk_str->cstr, "if") == 0)        lex->tk = LEX_R_IF;
-	else if (strcmp(lex->tk_str->cstr, "else") == 0)      lex->tk = LEX_R_ELSE;
-	else if (strcmp(lex->tk_str->cstr, "do") == 0)        lex->tk = LEX_R_DO;
-	else if (strcmp(lex->tk_str->cstr, "while") == 0)    lex->tk = LEX_R_WHILE;
-	else if (strcmp(lex->tk_str->cstr, "for") == 0)     lex->tk = LEX_R_FOR;
-	else if (strcmp(lex->tk_str->cstr, "break") == 0)    lex->tk = LEX_R_BREAK;
-	else if (strcmp(lex->tk_str->cstr, "continue") == 0)  lex->tk = LEX_R_CONTINUE;
-	else if (strcmp(lex->tk_str->cstr, "static") == 0)  lex->tk = LEX_R_STATIC;
-	else if (strcmp(lex->tk_str->cstr, "function") == 0)  lex->tk = LEX_R_FUNCTION;
-	else if (strcmp(lex->tk_str->cstr, "return") == 0)   lex->tk = LEX_R_RETURN;
-	else if (strcmp(lex->tk_str->cstr, "var")  == 0)      lex->tk = LEX_R_SAFE_VAR;
-	else if (strcmp(lex->tk_str->cstr, "const") == 0)     lex->tk = LEX_R_CONST;
-	else if (strcmp(lex->tk_str->cstr, "true") == 0)      lex->tk = LEX_R_TRUE;
-	else if (strcmp(lex->tk_str->cstr, "false") == 0)     lex->tk = LEX_R_FALSE;
-	else if (strcmp(lex->tk_str->cstr, "null") == 0)      lex->tk = LEX_R_NULL;
-	else if (strcmp(lex->tk_str->cstr, "undefined") == 0) lex->tk = LEX_R_UNDEFINED;
+	if (strcmp(lex->tk_str->cstr, "if") == 0) {
+		lex->tk = LEX_R_IF;
+	} else if (strcmp(lex->tk_str->cstr, "else") == 0) {
+		lex->tk = LEX_R_ELSE;
+	} else if (strcmp(lex->tk_str->cstr, "do") == 0) {
+		lex->tk = LEX_R_DO;
+	} else if (strcmp(lex->tk_str->cstr, "while") == 0) {
+		lex->tk = LEX_R_WHILE;
+	} else if (strcmp(lex->tk_str->cstr, "for") == 0) {
+		lex->tk = LEX_R_FOR;
+	} else if (strcmp(lex->tk_str->cstr, "break") == 0) {
+		lex->tk = LEX_R_BREAK;
+	} else if (strcmp(lex->tk_str->cstr, "continue") == 0) {
+		lex->tk = LEX_R_CONTINUE;
+	} else if (strcmp(lex->tk_str->cstr, "static") == 0) {
+		lex->tk = LEX_R_STATIC;
+	} else if (strcmp(lex->tk_str->cstr, "function") == 0) {
+		lex->tk = LEX_R_FUNCTION;
+	} else if (strcmp(lex->tk_str->cstr, "return") == 0) {
+		lex->tk = LEX_R_RETURN;
+	} else if (strcmp(lex->tk_str->cstr, "var") == 0) {
+		lex->tk = LEX_R_SAFE_VAR;
+	} else if (strcmp(lex->tk_str->cstr, "const") == 0) {
+		lex->tk = LEX_R_CONST;
+	} else if (strcmp(lex->tk_str->cstr, "true") == 0) {
+		lex->tk = LEX_R_TRUE;
+	} else if (strcmp(lex->tk_str->cstr, "false") == 0) {
+		lex->tk = LEX_R_FALSE;
+	} else if (strcmp(lex->tk_str->cstr, "null") == 0) {
+		lex->tk = LEX_R_NULL;
+	} else if (strcmp(lex->tk_str->cstr, "undefined") == 0) {
+		lex->tk = LEX_R_UNDEFINED;
+	}
 }
 
 void lex_get_next_token(lex_t* lex) {
@@ -246,6 +263,7 @@ void compile_error_pos(lex_t* l, int pos) {
 }
 
 bool lex_chkread(lex_t* lex, uint32_t expected_tk);
+const char* lex_get_token_str(int token, char* str);
 bool lex_skip_empty(lex_t* l) {
 	if(l->tk == '\n') {//skip empty lines.
 		while (l->tk=='\n') 
@@ -254,9 +272,114 @@ bool lex_skip_empty(lex_t* l) {
 	return true;
 }
 
+const char* lex_get_token_str(int token, char* str) {
+	if (token > 32 && token < 128) {
+		str[0] = (char)token;
+		return str;
+	}
+	switch (token) {
+		case LEX_EOF:
+			return "EOF";
+		case LEX_ID:
+			return "ID";
+		case LEX_INT:
+			return "INT";
+		case LEX_FLOAT:
+			return "FLOAT";
+		case LEX_STR:
+			return "STRING";
+		case LEX_EQUAL:
+			return "==";
+		case LEX_TYPEEQUAL:
+			return "===";
+		case LEX_NEQUAL:
+			return "!=";
+		case LEX_NTYPEEQUAL:
+			return "!==";
+		case LEX_LEQUAL:
+			return "<=";
+		case LEX_LSHIFT:
+			return "<<";
+		case LEX_LSHIFTEQUAL:
+			return "<<=";
+		case LEX_GEQUAL:
+			return ">=";
+		case LEX_RSHIFT:
+			return ">>";
+		case LEX_RSHIFTUNSIGNED:
+			return ">>>";
+		case LEX_RSHIFTEQUAL:
+			return ">>=";
+		case LEX_PLUSEQUAL:
+			return "+=";
+		case LEX_MINUSEQUAL:
+			return "-=";
+		case LEX_MULTIEQUAL:
+			return "*=";
+		case LEX_DIVEQUAL:
+			return "/=";
+		case LEX_MODEQUAL:
+			return "%=";
+		case LEX_PLUSPLUS:
+			return "++";
+		case LEX_MINUSMINUS:
+			return "--";
+		case LEX_ANDEQUAL:
+			return "&=";
+		case LEX_ANDAND:
+			return "&&";
+		case LEX_OREQUAL:
+			return "|=";
+		case LEX_OROR:
+			return "||";
+		case LEX_XOREQUAL:
+			return "^=";
+		// reserved words
+		case LEX_R_IF:
+			return "if";
+		case LEX_R_ELSE:
+			return "else";
+		case LEX_R_DO:
+			return "do";
+		case LEX_R_WHILE:
+			return "while";
+		case LEX_R_FOR:
+			return "for";
+		case LEX_R_BREAK:
+			return "break";
+		case LEX_R_CONTINUE:
+			return "continue";
+		case LEX_R_STATIC:
+			return "static";
+		case LEX_R_FUNCTION:
+			return "function";
+		case LEX_R_RETURN:
+			return "return";
+		case LEX_R_SAFE_VAR:
+			return "var";
+		case LEX_R_CONST:
+			return "const";
+		case LEX_R_TRUE:
+			return "true";
+		case LEX_R_FALSE:
+			return "false";
+		case LEX_R_NULL:
+			return "null";
+		case LEX_R_UNDEFINED:
+			return "undefined";
+	}
+	return "?[UNKNOW]";
+}
+
 bool lex_chkread(lex_t* lex, uint32_t expected_tk) { //check read with empty line.
 	if (lex->tk != expected_tk) {
-		mario_debug_pos(lex, -1);
+		char s_tk[2] = {0};
+		char s_expect[2] = {0};
+		const char* stk = lex_get_token_str(lex->tk, s_tk);
+		const char* sexp = lex_get_token_str(expected_tk, s_expect);
+
+		mario_printf("lex got '%s' expected '%s'! ", stk, sexp);
+		compile_error_pos(lex, -1);
 		return false;
 	}
 	lex_get_next_token(lex);
@@ -279,24 +402,39 @@ void gen_func_name(const char* name, int arg_num, mstr_t* full) {
 }
 
 int call_func(lex_t* l, bytecode_t* bc) {
-	if(!lex_chkread(l, '(')) return -1;
-	int arg_num = 0;
-	while(true) {
-		PC pc1 = bc->cindex;
-		if(!base(l, bc))
-			return -1;
-		PC pc2 = bc->cindex;
-		if(pc2 > pc1) //not empty, means valid arguemnt.
-			arg_num++;
+	 if (!lex_chkread(l, '(')) {
+        return -1;
+    }
 
-		if (l->tk!=')') {
-			if(!lex_chkread(l, ',')) return -1;	
-		}
-		else
-			break;
+	lex_skip_empty(l);
+	if(l->tk == ')') {
+		lex_chkread(l, ')');
+		return 0;
 	}
-	if(!lex_chkread(l, ')')) return -1;
-	return arg_num;
+
+    int arg_num = 0;
+    while (true) {
+        PC pc1 = bc->cindex;
+        if (!base(l, bc)) {
+            return -1;
+        }
+        PC pc2 = bc->cindex;
+        if (pc2 > pc1) { //not empty, means valid arguemnt.
+            arg_num++;
+        }
+
+        if (l->tk != ')') {
+            if (!lex_chkread(l, ',')) {
+                return -1;
+            }
+        } else {
+            break;
+        }
+    }
+    if (!lex_chkread(l, ')')) {
+        return -1;
+    }
+    return arg_num;
 }
 
 bool stmt_loop_block(lex_t* l, bytecode_t* bc) {
@@ -345,35 +483,48 @@ bool factor_def_func(lex_t* l, bytecode_t* bc, mstr_t* name) {
 	lex_skip_empty(l);
 
 	if (l->tk == LEX_R_STATIC) {
-		if(!lex_chkread(l, LEX_R_STATIC)) return false;
+		if (!lex_chkread(l, LEX_R_STATIC)) {
+			return false;
+		}
 		is_static = true;
 	}
 
 	/* we can have functions without names */
 	if (l->tk == LEX_ID) {
 		mstr_cpy(name, l->tk_str->cstr);
-		if(!lex_chkread(l, LEX_ID)) return false;
-	}
-
-	bc_gen(bc, is_static ? INSTR_FUNC_STC:INSTR_FUNC);
-	lex_skip_empty(l);
-	//do arguments
-	if(!lex_chkread(l, '(')) return false;
-	while (l->tk!=')') {
-		bc_gen_str(bc, INSTR_LOAD, l->tk_str->cstr);
-		if(!lex_chkread(l, LEX_ID)) return false;
-		if (l->tk!=')') {
-			if(!lex_chkread(l, ',')) return false;
+		if (!lex_chkread(l, LEX_ID)) {
+			return false;
 		}
 	}
-	if(!lex_chkread(l, ')')) return false;
+
+	bc_gen(bc, is_static ? INSTR_FUNC_STC : INSTR_FUNC);
+	lex_skip_empty(l);
+	//do arguments
+	if (!lex_chkread(l, '(')) {
+		return false;
+	}
+	while (l->tk != ')') {
+		bc_gen_str(bc, INSTR_LOAD, l->tk_str->cstr);
+		if (!lex_chkread(l, LEX_ID)) {
+			return false;
+		}
+		if (l->tk != ')') {
+			if (!lex_chkread(l, ',')) {
+				return false;
+			}
+		}
+	}
+	if (!lex_chkread(l, ')')) {
+		return false;
+	}
 	lex_skip_empty(l);
 	PC pc = bc_reserve(bc);
 	stmt_block(l, bc, true);
 	opr_code_t op = bc->code_buf[bc->cindex - 1] >> 16;
 
-	if(op != INSTR_RETURN && op != INSTR_RETURNV)
+	if (op != INSTR_RETURN && op != INSTR_RETURNV) {
 		bc_gen(bc, INSTR_RETURN);
+	}
 	bc_set_instr(bc, pc, INSTR_JMP, ILLEGAL_PC);
 	return true;
 }
@@ -454,87 +605,110 @@ bool factor_array_access(lex_t* l, bytecode_t* bc, mstr_t* name, bool member) {
 }
 
 bool factor(lex_t* l, bytecode_t* bc, bool member) {
-	if (l->tk=='(') {
+	if (l->tk == '(') {
 		PC pc = bc_reserve(bc);
-		if(!lex_chkread(l, '(')) return false;
-		if(!base(l, bc)) return false;
-		lex_skip_empty(l);
+        if (!lex_chkread(l, '(')) {
+            return false;
+        }
 
-		while(l->tk == ',') {
-			if(!lex_chkread(l, ',')) return false;
-			if(!base(l, bc)) return false;;
+		lex_skip_empty(l);
+		if(l->tk != ')') {
+			if (!base(l, bc)) {
+				return false;
+			}
 			lex_skip_empty(l);
+
+			while (l->tk == ',') {
+				if (!lex_chkread(l, ',')) {
+					return false;
+				}
+				if (!base(l, bc)) {
+					return false;
+				}
+				lex_skip_empty(l);
+			}
 		}
-		if(!lex_chkread(l, ')')) return false;
-		bc_remove_instr(bc, pc, 1);
-	}
-	else if (l->tk==LEX_R_TRUE) {
-		if(!lex_chkread(l, LEX_R_TRUE)) return false;
+		if (!lex_chkread(l, ')')) {
+			return false;
+		}
+        bc_remove_instr(bc, pc, 1);
+	} else if (l->tk == LEX_R_TRUE) {
+		if (!lex_chkread(l, LEX_R_TRUE)) {
+			return false;
+		}
 		bc_gen(bc, INSTR_TRUE);
-	}
-	else if (l->tk==LEX_R_FALSE) {
-		if(!lex_chkread(l, LEX_R_FALSE)) return false;
+	} else if (l->tk == LEX_R_FALSE) {
+		if (!lex_chkread(l, LEX_R_FALSE)) {
+			return false;
+		}
 		bc_gen(bc, INSTR_FALSE);
-	}
-	else if (l->tk==LEX_R_NULL) {
-		if(!lex_chkread(l, LEX_R_NULL)) return false;
+	} else if (l->tk == LEX_R_NULL) {
+		if (!lex_chkread(l, LEX_R_NULL)) {
+			return false;
+		}
 		bc_gen(bc, INSTR_NULL);
-	}
-	else if (l->tk==LEX_R_UNDEFINED) {
-		if(!lex_chkread(l, LEX_R_UNDEFINED)) return false;
+	} else if (l->tk == LEX_R_UNDEFINED) {
+		if (!lex_chkread(l, LEX_R_UNDEFINED)) {
+			return false;
+		}
 		bc_gen(bc, INSTR_UNDEF);
-	}
-	else if (l->tk==LEX_INT) {
+	} else if (l->tk == LEX_INT) {
 		bc_gen_str(bc, INSTR_INT, l->tk_str->cstr);
-		if(!lex_chkread(l, LEX_INT)) return false;
-	}
-	else if (l->tk==LEX_FLOAT) {
+		if (!lex_chkread(l, LEX_INT)) {
+			return false;
+		}
+	} else if (l->tk == LEX_FLOAT) {
 		bc_gen_str(bc, INSTR_FLOAT, l->tk_str->cstr);
-		if(!lex_chkread(l, LEX_FLOAT)) return false;
-	}
-	else if (l->tk==LEX_STR) {
+		if (!lex_chkread(l, LEX_FLOAT)) {
+			return false;
+		}
+	} else if (l->tk == LEX_STR) {
 		bc_gen_str(bc, INSTR_STR, l->tk_str->cstr);
-		if(!lex_chkread(l, LEX_STR)) return false;
-	}
-	else if(l->tk==LEX_R_FUNCTION) { //define function
-		if(!lex_chkread(l, LEX_R_FUNCTION)) return false;
+		if (!lex_chkread(l, LEX_STR)) {
+			return false;
+		}
+	} else if (l->tk == LEX_R_FUNCTION) { //define function
+		if (!lex_chkread(l, LEX_R_FUNCTION)) {
+			return false;
+		}
 		mstr_t *fname = mstr_new("");
 		factor_def_func(l, bc, fname);
 		mstr_free(fname);
-	}
-	else if (l->tk=='{') { // JSON-style object definition
+	} else if (l->tk == '{') { // JSON-style object definition
 		factor_json(l, bc);
-	}
-	else if (l->tk=='[') { // JSON-style array 
+	} else if (l->tk == '[') { // JSON-style array 
 		factor_array(l, bc);
-	}
-	else if(l->tk==LEX_ID) {
+	} else if (l->tk == LEX_ID) {
 		mstr_t* name = mstr_new(l->tk_str->cstr);
-		if(!lex_chkread(l, LEX_ID)) return false;
-
-		if (l->tk=='(') { // function call
-			factor_call_func(l, bc, name, member);
-		} 
-		else if (l->tk == '[') { // array access
-			factor_array_access(l, bc, name, member);
+		if (!lex_chkread(l, LEX_ID)) {
+			return false;
 		}
-		else {
-			if(member) {
-				bc_gen_str(bc, INSTR_GET, name->cstr);	
-			}
-			else if (l->tk == '.') {
-				bc_gen_str(bc, INSTR_LOAD, name->cstr);	
-			}
-			else {
-				bc_gen_str(bc, INSTR_LOAD, name->cstr);	
+
+		if (l->tk == '(') { // function call
+			factor_call_func(l, bc, name, member);
+		} else if (l->tk == '[') { // array access
+			factor_array_access(l, bc, name, member);
+		} else {
+			if (member) {
+				bc_gen_str(bc, INSTR_GET, name->cstr);
+			} else if (l->tk == '.') {
+				bc_gen_str(bc, INSTR_LOAD, name->cstr);
+			} else {
+				bc_gen_str(bc, INSTR_LOAD, name->cstr);
 			}
 		}
 		mstr_free(name);
+	} else {
+		return false;
 	}
 
-	if(l->tk == '.')  { // followed by member fetch
-		if(!lex_chkread(l, '.')) return false;
-		if(!factor(l, bc, true)) return false;;
+	if (l->tk == '.') { // followed by member fetch
+		if (!lex_chkread(l, '.')) {
+			return false;
+		}
+		if (!factor(l, bc, true)) {
+			return false;
+		}
 	}
 	return true;
 }
@@ -742,36 +916,38 @@ bool ternary(lex_t *l, bytecode_t* bc) {
 }
 
 bool base(lex_t* l, bytecode_t* bc) {
-	if(!ternary(l, bc))
+	if (!ternary(l, bc)) {
 		return false;
+	}
 
-	if (l->tk=='=' || 
-			l->tk==LEX_PLUSEQUAL ||
-			l->tk==LEX_MULTIEQUAL ||
-			l->tk==LEX_DIVEQUAL ||
-			l->tk==LEX_MODEQUAL ||
-			l->tk==LEX_MINUSEQUAL) {
+	if (l->tk == '=' || 
+		l->tk == LEX_PLUSEQUAL ||
+		l->tk == LEX_MULTIEQUAL ||
+		l->tk == LEX_DIVEQUAL ||
+		l->tk == LEX_MODEQUAL ||
+		l->tk == LEX_MINUSEQUAL) {
 		LEX_TYPES op = (LEX_TYPES)l->tk;
-		if(!lex_chkread(l, l->tk)) return false;
-		base(l, bc);
+		if (!lex_chkread(l, l->tk)) {
+			return false;
+		}
+		if (!base(l, bc)) {
+			return false;
+		}
 		// sort out initialiser
-		if (op == '=')  {
+		if (op == '=') {
 			bc_gen(bc, INSTR_ASIGN);
-		}
-		else if(op == LEX_PLUSEQUAL) {
+		} else if (op == LEX_PLUSEQUAL) {
 			bc_gen(bc, INSTR_PLUSEQ);
-		}
-		else if(op == LEX_MINUSEQUAL) {
+		} else if (op == LEX_MINUSEQUAL) {
 			bc_gen(bc, INSTR_MINUSEQ);
-		}
-		else if(op == LEX_MULTIEQUAL) {
+		} else if (op == LEX_MULTIEQUAL) {
 			bc_gen(bc, INSTR_MULTIEQ);
-		}
-		else if(op == LEX_DIVEQUAL) {
+		} else if (op == LEX_DIVEQUAL) {
 			bc_gen(bc, INSTR_DIVEQ);
-		}
-		else if(op == LEX_MODEQUAL) {
+		} else if (op == LEX_MODEQUAL) {
 			bc_gen(bc, INSTR_MODEQ);
+		} else {
+			return false;
 		}
 	}
 	return true;
@@ -785,29 +961,45 @@ static bool is_stmt_end(int tk) {
 bool stmt_var(lex_t* l, bytecode_t* bc) {
 	opr_code_t op;
 
-	if(l->tk == LEX_R_SAFE_VAR) {
-		if(!lex_chkread(l, LEX_R_SAFE_VAR)) return false;
+	if (l->tk == LEX_R_SAFE_VAR) {
+		if (!lex_chkread(l, LEX_R_SAFE_VAR)) {
+			return false;
+		}
 		op = INSTR_SAFE_VAR;
-	}
-	else {
-		if(!lex_chkread(l, LEX_R_CONST)) return false;
+	} else {
+		if (!lex_chkread(l, LEX_R_CONST)) {
+			return false;
+		}
 		op = INSTR_CONST;
 	}
 
 	while (!is_stmt_end(l->tk)) {
 		mstr_t* vname = mstr_new(l->tk_str->cstr);
-		if(!lex_chkread(l, LEX_ID)) return false;
+		if (!lex_chkread(l, LEX_ID)) {
+			mstr_free(vname);
+			return false;
+		}
 		bc_gen_str(bc, op, vname->cstr);
 		// sort out initialiser
 		if (l->tk == '=') {
-			if(!lex_chkread(l, '=')) return false;
+			if (!lex_chkread(l, '=')) {
+				mstr_free(vname);
+				return false;
+			}
 			bc_gen_str(bc, INSTR_LOAD, vname->cstr);
-			if(!base(l, bc)) return false;
+			if (!base(l, bc)) {
+				mstr_free(vname);
+				return false;
+			}
 			bc_gen(bc, INSTR_ASIGN);
 			bc_gen(bc, INSTR_POP);
 		}
-		if (!is_stmt_end(l->tk))
-			if(!lex_chkread(l, ',')) return false;
+		if (!is_stmt_end(l->tk)) {
+			if (!lex_chkread(l, ',')) {
+				mstr_free(vname);
+				return false;
+			}
+		}
 		mstr_free(vname);
 	}
 	return lex_chkread_stmt_end(l);
@@ -994,20 +1186,22 @@ bool compile(bytecode_t *bc, const char* input) {
 	lex_init(&lex, input);
 	lex_get_next_token(&lex);
 
-	while(lex.tk) {
-		if(!statement(&lex, bc)) {
-			mario_printf("Error: compile failed! '%s' ", lex.tk_str->cstr);
-			compile_error_pos(&lex, -1);
-			lex_release(&lex);
-			return false;
-		}
+	bool ret = true;
+	while (lex.tk != LEX_EOF && ret) {
+		ret = statement(&lex, bc);
+		lex_skip_empty(&lex);
 	}
-	bc_gen(bc, INSTR_END);
+
+	if (ret) {
+		bc_gen(bc, INSTR_END);
+	} else {
+		compile_error_pos(&lex, -1);
+	}
+
 	lex_release(&lex);
-	return true;
+	return ret;
 }
 
 #ifdef __cplusplus
 }
 #endif /* __cplusplus */
-
