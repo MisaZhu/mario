@@ -1,5 +1,6 @@
 *.o
 *.swp
 .DS_*
-demo/demo
+demos/tinyjs/demo
+demos/js_call/demo
 .vscode
