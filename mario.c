@@ -25,7 +25,7 @@ inline void mario_free(void* p) {
 
 void  free_none(void* p) { }
 
-void *_realloc(void* p, uint32_t old_size, uint32_t new_size) {
+void *mario_realloc(void* p, uint32_t old_size, uint32_t new_size) {
 	void *np = mario_malloc(new_size);
 	if(p != NULL) {
 		memcpy(np, p, old_size);
@@ -261,7 +261,7 @@ inline void array_add(m_array_t* array, void* item) {
 	uint32_t new_size = array->size + 1; 
 	if(array->max <= new_size) { 
 		new_size = array->size + ARRAY_BUF;
-		array->items = (void**)_realloc(array->items, array->max*sizeof(void*), new_size*sizeof(void*)); 
+		array->items = (void**)mario_realloc(array->items, array->max*sizeof(void*), new_size*sizeof(void*)); 
 		array->max = new_size; 
 	} 
 	array->items[array->size] = item; 
@@ -273,7 +273,7 @@ inline void array_add_head(m_array_t* array, void* item) {
 	uint32_t new_size = array->size + 1; 
 	if(array->max <= new_size) { 
 		new_size = array->size + ARRAY_BUF;
-		array->items = (void**)_realloc(array->items, array->max*sizeof(void*), new_size*sizeof(void*)); 
+		array->items = (void**)mario_realloc(array->items, array->max*sizeof(void*), new_size*sizeof(void*)); 
 		array->max = new_size; 
 	} 
 	int32_t i;
@@ -395,7 +395,7 @@ char* mstr_ncpy(mstr_t* str, const char* src, uint32_t l) {
 	uint32_t new_size = len;
 	if(str->max <= new_size) {
 		new_size = len + mstr_BUF; /*STR BUF for buffer*/
-		str->cstr = (char*)_realloc(str->cstr, str->max, new_size);
+		str->cstr = (char*)mario_realloc(str->cstr, str->max, new_size);
 		str->max = new_size;
 	}
 
@@ -437,7 +437,7 @@ char* mstr_append(mstr_t* str, const char* src) {
 	uint32_t new_size = str->len + len;
 	if(str->max <= new_size) {
 		new_size = str->len + len + mstr_BUF; /*STR BUF for buffer*/
-		str->cstr = (char*)_realloc(str->cstr, str->max, new_size);
+		str->cstr = (char*)mario_realloc(str->cstr, str->max, new_size);
 		str->max = new_size;
 	}
 
@@ -451,7 +451,7 @@ char* mstr_add(mstr_t* str, char c) {
 	uint32_t new_size = str->len + 1;
 	if(str->max <= new_size) {
 		new_size = str->len + mstr_BUF; /*STR BUF for buffer*/
-		str->cstr = (char*)_realloc(str->cstr, str->max, new_size);
+		str->cstr = (char*)mario_realloc(str->cstr, str->max, new_size);
 		str->max = new_size;
 	}
 
@@ -1959,26 +1959,11 @@ static var_t* vm_stack_pick(vm_t* vm, int depth) {
 	return ret;
 }
 
-//scope of vm runing
-typedef struct st_scope {
-	struct st_scope* prev;
-	var_t* var;
-	PC pc_start; // continue anchor for loop
-	PC pc; // try cache anchor , or break anchor for loop
-	uint32_t is_func: 8;
-	uint32_t is_block: 8;
-	uint32_t is_try: 8;
-	uint32_t is_loop: 4;
-	uint32_t is_strict: 4;
-	func_t*  func;
-	//continue and break anchor for loop(while/for)
-} scope_t;
-
-#define vm_get_scope(vm) (scope_t*)array_tail((vm)->scopes)
+#define vm_get_scope(vm) ((vm)->scope_stack_top > 0 ? (vm)->scope_stack[(vm)->scope_stack_top - 1] : NULL)
 
 static inline var_t* vm_get_scope_var(vm_t* vm) {
 	var_t* ret = vm->root;
-	scope_t* sc = (scope_t*)array_tail(vm->scopes);
+	scope_t* sc = vm_get_scope(vm);
 	if(sc != NULL && !var_empty(sc->var))
 		ret = sc->var;
 	return ret;
@@ -1986,7 +1971,6 @@ static inline var_t* vm_get_scope_var(vm_t* vm) {
 
 static scope_t* scope_new(var_t* var) {
 	scope_t* sc = (scope_t*)mario_malloc(sizeof(scope_t));
-	sc->prev = NULL;
 
 	if(var != NULL)
 		sc->var = var_ref(var);
@@ -2004,7 +1988,6 @@ static scope_t* scope_new(var_t* var) {
 	memcpy(sc, src, sizeof(scope_t));
 	if(src->var != NULL)
 		sc->var = var_ref(src->var);
-	sc->prev = NULL;
 	return sc;
 }
 */
@@ -2032,14 +2015,18 @@ static void scope_free(void* p) {
 
 static void vm_push_scope(vm_t* vm, scope_t* sc) {
 	scope_t* prev = NULL;
-	if(vm->scopes->size > 0)
-		prev = (scope_t*)array_tail(vm->scopes);
-	array_add(vm->scopes, sc);	
-	sc->prev = prev;
+	if(vm->scope_stack_top > 0) {
+		prev = vm->scope_stack[vm->scope_stack_top - 1];
+	}
+	if(vm->scope_stack_top < VM_SCOPE_STACK_MAX) {
+		vm->scope_stack[vm->scope_stack_top] = sc;
+		vm->scope_stack_top++;
+		sc->prev = prev;
+	}
 }
 
 static PC vm_pop_scope(vm_t* vm) {
-	if(vm->scopes->size <= 0)
+	if(vm->scope_stack_top <= 0)
 		return 0;
 
 	PC pc = 0;
@@ -2049,7 +2036,8 @@ static PC vm_pop_scope(vm_t* vm) {
 
 	if(sc->is_func)
 		pc = sc->pc;
-	array_del(vm->scopes, vm->scopes->size-1, scope_free);
+	vm->scope_stack_top--;
+	scope_free(sc);
 	gc(vm, false);
 	return pc;
 }
@@ -3768,9 +3756,12 @@ void vm_close(vm_t* vm) {
 	var_cache_free(vm);
 	load_ncache_free(vm);
 
-	vm_pop_scope(vm);
-	array_free(vm->scopes, scope_free);
-	vm->scopes = NULL;
+	// Pop and free all scopes
+	while(vm->scope_stack_top > 0) {
+		scope_t* sc = vm->scope_stack[vm->scope_stack_top - 1];
+		vm->scope_stack_top--;
+		scope_free(sc);
+	}
 	array_clean(&vm->init_natives, NULL);
 	array_clean(&vm->included, (free_func_t)mstr_free);	
 
@@ -3966,7 +3957,7 @@ vm_t* vm_new(compiler_func_t compiler, uint32_t var_cache_size, uint32_t load_nc
 	bc_init(&vm->bc);
 
 	vm->this_strIndex = bc_getstrindex(&vm->bc, THIS);
-	vm->scopes = array_new();
+	vm->scope_stack_top = 0;
 
 	var_cache_init(vm);
 	load_ncache_init(vm);

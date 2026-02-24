@@ -19,7 +19,7 @@ extern void  (*_platform_out)(const char*);
 
 extern void* mario_malloc(uint32_t size);
 extern void  mario_free(void* p);
-extern void* _realloc(void* p, uint32_t old_size, uint32_t new_size);
+extern void* mario_realloc(void* p, uint32_t old_size, uint32_t new_size);
 
 /**====== debug functions.======*/
 void        mario_debug(const char *format, ...);
@@ -345,11 +345,29 @@ typedef bool (*compiler_func_t)(bytecode_t *bc, const char* input);
 
 #define VM_STACK_MAX    32
 
+//scope of vm runing
+typedef struct st_scope {
+	var_t* var;
+	PC pc_start; // continue anchor for loop
+	PC pc; // try cache anchor , or break anchor for loop
+	uint32_t is_func: 8;
+	uint32_t is_block: 8;
+	uint32_t is_try: 8;
+	uint32_t is_loop: 4;
+	uint32_t is_strict: 4;
+	func_t*  func;
+	struct st_scope* prev;
+	//continue and break anchor for loop(while/for)
+} scope_t;
+
+#define VM_SCOPE_STACK_MAX    32
+
 typedef struct st_vm {
 	bytecode_t          bc;
 	compiler_func_t     compiler;
 
-	m_array_t*          scopes;
+	scope_t*            scope_stack[VM_SCOPE_STACK_MAX];
+	int32_t             scope_stack_top;
 	void*               stack[VM_STACK_MAX];
 	int32_t             stack_top;
 	PC                  pc;
