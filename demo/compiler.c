@@ -246,20 +246,12 @@ void lex_get_next_token(lex_t* lex) {
 	lex_token_end(lex);
 }
 
-void mario_debug_pos(lex_t* l, int pos) {
-	int line = 1;
-	int col;
-
-	lex_get_pos(l, &line, &col, pos);
-	mario_debug("(line: %d, col: %d)\n",  line, col);
-}
-
 void compile_error_pos(lex_t* l, int pos) {
 	int line = 1;
 	int col;
 
 	lex_get_pos(l, &line, &col, pos);
-	mario_printf("(line: %d, col: %d)\n",  line, col);
+    mario_printf("compile error at (line: %d, col: %d)\n", line, col);
 }
 
 bool lex_chkread(lex_t* lex, uint32_t expected_tk);
