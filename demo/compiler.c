@@ -681,6 +681,7 @@ bool factor(lex_t* l, bytecode_t* bc, bool member) {
 	} else if (l->tk == LEX_ID) {
 		mstr_t* name = mstr_new(l->tk_str->cstr);
 		if (!lex_chkread(l, LEX_ID)) {
+			mstr_free(name);
 			return false;
 		}
 
