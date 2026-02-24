@@ -2834,7 +2834,19 @@ var_t* call_m_func(vm_t* vm, var_t* obj, var_t* func, var_t* args) {
 	return ret;
 }
 
-var_t* call_m_func_by_name(vm_t* vm, var_t* obj, const char* func_name, var_t* args) {
+var_t* call_m_func_by_name(vm_t* vm, var_t* obj, const char* func_name, uint32_t arg_num, ... ) {
+	va_list args;
+    va_start(args, arg_num);
+	var_t* func_args = var_new_array(vm);
+
+    for (int i = 0; i < arg_num; i++) {
+        var_t* arg = va_arg(args, var_t*);  // 取出void*类型的可变参数
+		var_array_add(func_args, arg);
+    }
+    va_end(args);
+
+
+
 	if(obj == NULL)
 		obj = vm->root;
 	node_t* func = var_find_member(obj, func_name);
@@ -2843,7 +2855,9 @@ var_t* call_m_func_by_name(vm_t* vm, var_t* obj, const char* func_name, var_t* a
 		mario_printf("Interrupt function '%s' not defined!\n", func_name);
 		return NULL;
 	}
-	return call_m_func(vm, obj, func->var, args);
+	var_t* ret = call_m_func(vm, obj, func->var, func_args);
+	var_unref(func_args);
+	return ret;
 }
 
 /*****************/
@@ -3683,7 +3697,6 @@ bool vm_run(vm_t* vm) {
 		register uint32_t offset = OFF(ins);
 
 		if(instr == INSTR_END) {
-			vm->terminated = true;
 			break;
 		}
 
@@ -3963,7 +3976,7 @@ vm_t* vm_new(compiler_func_t compiler, uint32_t var_cache_size, uint32_t load_nc
 	array_init(&vm->init_natives);	
 	
 	vm->root = var_new_obj_no_proto(vm, NULL, NULL);
-	vm_push_scope(vm, scope_new(vm->root));
+	//vm_push_scope(vm, scope_new(vm->root));
 
 	var_ref(vm->root);
 	vm->builtin_vars.var_true = var_new_bool(vm, true);

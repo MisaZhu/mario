@@ -512,7 +512,7 @@ bool        get_func_arg_bool(var_t* env, uint32_t index);
 float       get_func_arg_float(var_t* env, uint32_t index);
 const char* get_func_arg_str(var_t* env, uint32_t index);
 var_t*      call_m_func(vm_t* vm, var_t* obj, var_t* func, var_t* args);
-var_t*      call_m_func_by_name(vm_t* vm, var_t* obj, const char* func_name, var_t* args);
+var_t*      call_m_func_by_name(vm_t* vm, var_t* obj, const char* func_name, uint32_t arg_num, ... );
 
 bool        interrupt(vm_t* vm, var_t* obj, var_t* func, const char* msg);
 bool        interrupt_by_name(vm_t* vm, var_t* obj, const char* func_name, const char* msg);
