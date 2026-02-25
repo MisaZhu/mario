@@ -3253,7 +3253,7 @@ static inline void handle_var(vm_t* vm, PC ins, opr_code_t instr, uint32_t offse
 	const char* s = bc_getstr(&vm->bc, offset);
 	node_t *node = vm_find(vm, s);
 	if(node != NULL) {
-		mario_debug("Warning: '%s' has already existed!\n", s);
+		//mario_debug("Warning: '%s' has already existed!\n", s);
 	}
 	else {
 		var_t* v = vm_get_scope_var(vm);
