@@ -3402,12 +3402,9 @@ static inline void handle_call(vm_t* vm, PC ins, opr_code_t instr, uint32_t offs
 			vm_pop(vm);
 			arg_num--;
 		}
-		//vm_push(vm, var_new(vm));
+		vm_push(vm, var_new(vm));
 		mario_debug("Error: can not find function '%s'!\n", name->cstr);
 		vm_throw(vm, "can not find function '%s'!", name->cstr);
-		mstr_free(name);
-		//vm_pop(vm);
-		return;
 	}
 	mstr_free(name);
 
