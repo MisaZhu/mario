@@ -2832,8 +2832,7 @@ var_t* call_m_func_by_name(vm_t* vm, var_t* obj, const char* func_name, uint32_t
 		var_array_add(func_args, arg);
     }
     va_end(args);
-
-
+	var_array_reverse(func_args);
 
 	if(obj == NULL)
 		obj = vm->root;
