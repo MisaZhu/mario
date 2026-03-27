@@ -831,7 +831,7 @@ static void load_ncache_invalidate(vm_t* vm, node_t* node) {
 }
 
 static void load_ncache(vm_t* vm, node_t* node, PC instr_pc) {
-	if(vm->load_ncache.size == 0)
+	if(vm->load_ncache.size == 0 || node == NULL)
 		return;
 
 	PC* code = vm->bc.code_buf;
@@ -849,7 +849,7 @@ static void load_ncache(vm_t* vm, node_t* node, PC instr_pc) {
 	}
 
 	uint32_t i;
-    for(i=0; i<LOAD_NCACHE_MAX_DEF; ++i) {
+    for(i=0; i<vm->load_ncache.size; ++i) {
         load_ncache_t* l = &vm->load_ncache.cache[i];	
         if(l->node == NULL) {
 			node->ncache_instr = INS(INSTR_NCACHE, i);
@@ -1332,6 +1332,8 @@ void var_free(void* p) {
 }
 
 inline var_t* var_ref(var_t* var) {
+	if(var == NULL)
+		return NULL;
 	++var->refs;
 	if(var->status == V_ST_GC) {
 		/*remove from vm->gc_vars list.*/
@@ -1839,6 +1841,8 @@ void var_to_json_str(var_t* var, mstr_t* ret, int level) {
 /**======Interrupt functions======*/
 
 inline void vm_push(vm_t* vm, var_t* var) {  
+	if(var == NULL)
+		return;
 	var_ref(var);
 	if(vm->stack_top < VM_STACK_MAX) {
 		vm->stack[vm->stack_top++] = var; 
@@ -1945,7 +1949,8 @@ static var_t* vm_stack_pick(vm_t* vm, int depth) {
 	int8_t magic = *(int8_t*)p;
 	if(magic == 1) {//node
 		node_t* node = (node_t*)p;
-		ret = node->var;
+		if(node != NULL)
+			ret = node->var;
 	}
 	else {
 		ret = (var_t*)p;
@@ -2935,6 +2940,11 @@ static inline void handle_load(vm_t* vm, PC ins, opr_code_t instr, uint32_t offs
 			vm_push(vm, thisV);
 			loaded = true;
 		}
+		else {
+			// this is NULL, push undefined
+			vm_push(vm, var_new(vm));
+			loaded = true;
+		}
 	}
 
 	if(!loaded) {
@@ -2962,6 +2972,12 @@ static inline void handle_load(vm_t* vm, PC ins, opr_code_t instr, uint32_t offs
 static inline void handle_compare(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
 	var_t* v2 = vm_pop2(vm);
 	var_t* v1 = vm_pop2(vm);
+	if(v1 == NULL || v2 == NULL) {
+		vm_push(vm, var_new(vm));
+		if(v1 != NULL) var_unref(v1);
+		if(v2 != NULL) var_unref(v2);
+		return;
+	}
 	compare(vm, instr, v1, v2);
 	var_unref(v1);
 	var_unref(v2);
@@ -3141,6 +3157,10 @@ static inline void handle_mminus_pre(vm_t* vm, PC ins, opr_code_t instr, uint32_
 static inline void handle_mminus(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
 	register PC* code = vm->bc.code_buf;
 	var_t* v = vm_pop2(vm);
+	if(v == NULL) {
+		vm_push(vm, var_new(vm));
+		return;
+	}
 	int *i = (int*)v->value;
 	if(i != NULL) {
 		if((ins & INSTR_OPT_CACHE) == 0) {
@@ -3168,6 +3188,10 @@ static inline void handle_mminus(vm_t* vm, PC ins, opr_code_t instr, uint32_t of
 static inline void handle_pplus_pre(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
 	register PC* code = vm->bc.code_buf;
 	var_t* v = vm_pop2(vm);
+	if(v == NULL) {
+		vm_push(vm, var_new(vm));
+		return;
+	}
 	int *i = (int*)v->value;
 	if(i != NULL) {
 		(*i)++;
@@ -3193,6 +3217,10 @@ static inline void handle_pplus_pre(vm_t* vm, PC ins, opr_code_t instr, uint32_t
 static inline void handle_pplus(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
 	register PC* code = vm->bc.code_buf;
 	var_t* v = vm_pop2(vm);
+	if(v == NULL) {
+		vm_push(vm, var_new(vm));
+		return;
+	}
 	int *i = (int*)v->value;
 	if(i != NULL) {
 		if((ins & INSTR_OPT_CACHE) == 0) {
@@ -3224,8 +3252,13 @@ static inline void handle_return(vm_t* vm, PC ins, opr_code_t instr, uint32_t of
 	}
 	else {
 		ret = vm_pop2(vm);
-		vm_push(vm, ret);
-		var_unref(ret);
+		if(ret != NULL) {
+			vm_push(vm, ret);
+			var_unref(ret);
+		}
+		else {
+			vm_push(vm, var_new(vm));
+		}
 	}
 
 	while(true) {
@@ -3343,6 +3376,10 @@ static inline void handle_asign(vm_t* vm, PC ins, opr_code_t instr, uint32_t off
 static inline void handle_get(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
 	const char* s = bc_getstr(&vm->bc, offset);
 	var_t* v = vm_pop2(vm);
+	if(v == NULL) {
+		vm_push(vm, var_new(vm));
+		return;
+	}
 	do_get(vm, v, s);
 	var_unref(v);
 }
@@ -3455,6 +3492,12 @@ static inline void handle_obj_end(vm_t* vm, PC ins, opr_code_t instr, uint32_t o
 static inline void handle_array_at(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
 	var_t* v2 = vm_pop2(vm);
 	var_t* v1 = vm_pop2(vm);
+	if(v1 == NULL || v2 == NULL) {
+		vm_push(vm, var_new(vm));
+		if(v1 != NULL) var_unref(v1);
+		if(v2 != NULL) var_unref(v2);
+		return;
+	}
 	node_t* n = NULL;
 	if(v2->type == V_STRING) {
 		const char* s = var_get_str(v2);
@@ -3499,14 +3542,21 @@ static inline void handle_class_end(vm_t* vm, PC ins, opr_code_t instr, uint32_t
 static inline void handle_instof(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
 	var_t* v2 = vm_pop2(vm);
 	var_t* v1 = vm_pop2(vm);
-	bool res = var_instanceof(v1, v2);
-	var_unref(v2);
-	var_unref(v1);
+	bool res = false;
+	if(v1 != NULL && v2 != NULL) {
+		res = var_instanceof(v1, v2);
+	}
+	if(v2 != NULL) var_unref(v2);
+	if(v1 != NULL) var_unref(v1);
 	vm_push(vm, var_new_bool(vm, res));
 }
 
 static inline void handle_typeof(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
 	var_t* var = vm_pop2(vm);
+	if(var == NULL) {
+		vm_push(vm, var_new_str(vm, "undefined"));
+		return;
+	}
 	var_t* v = var_new_str(vm, get_typeof(var));
 	var_unref(var);
 	vm_push(vm, v);
@@ -3514,6 +3564,9 @@ static inline void handle_typeof(vm_t* vm, PC ins, opr_code_t instr, uint32_t of
 
 static inline void handle_include(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
 	var_t* v = vm_pop2(vm);
+	if(v == NULL) {
+		return;
+	}
 	do_include(vm, var_get_str(v));
 	var_unref(v);
 }
@@ -3538,6 +3591,9 @@ static inline void handle_throw(vm_t* vm, PC ins, opr_code_t instr, uint32_t off
 static inline void handle_catch(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
 	const char* s = bc_getstr(&vm->bc, offset);
 	var_t* v = vm_pop2(vm);
+	if(v == NULL) {
+		return;
+	}
 	var_t* sc_var = vm_get_scope_var(vm);
 	var_add(sc_var, s, v);
 	var_unref(v);
