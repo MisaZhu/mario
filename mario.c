@@ -1976,6 +1976,7 @@ static inline var_t* vm_get_scope_var(vm_t* vm) {
 
 static scope_t* scope_new(var_t* var) {
 	scope_t* sc = (scope_t*)mario_malloc(sizeof(scope_t));
+	memset(sc, 0, sizeof(scope_t));
 
 	if(var != NULL)
 		sc->var = var_ref(var);
@@ -2264,6 +2265,7 @@ static func_t* func_new() {
 	func_t* func = (func_t*)mario_malloc(sizeof(func_t));
 	if(func == NULL)
 		return NULL;
+	memset(func, 0, sizeof(func_t));
 	
 	func->native = NULL;
 	func->regular = true;
