@@ -3220,12 +3220,7 @@ static inline void handle_pplus(vm_t* vm, PC ins, opr_code_t instr, uint32_t off
 static inline void handle_return(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
 	var_t* ret = NULL;
 	if(instr == INSTR_RETURN) {
-		var_t* thisV = vm_this_in_scopes(vm);
-		if(thisV != NULL) {
-			vm_push(vm, thisV);
-		}
-		else
-			vm_push(vm, var_new(vm));
+		vm_push(vm, var_new(vm));
 	}
 	else {
 		ret = vm_pop2(vm);
