@@ -1856,6 +1856,8 @@ inline void vm_push_node(vm_t* vm, node_t* node) {
 }
 
 static inline var_t* vm_pop2(vm_t* vm) {
+	if(vm->stack_top == 0)
+		return NULL;
 	void *p = NULL;
 	vm->stack_top--;
 	p = vm->stack[vm->stack_top];
@@ -1921,11 +1923,9 @@ static inline bool vm_pop(vm_t* vm) {
 }
 
 static inline node_t* vm_pop2node(vm_t* vm) {
-	void *p = NULL;
-	/*if(vm->stack_top <= 0) 
+	if(vm->stack_top == 0)
 		return NULL;
-	*/
-
+	void *p = NULL;
 	vm->stack_top--;
 	p = vm->stack[vm->stack_top];
 	int8_t magic = *(int8_t*)p;
