@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <stdarg.h>
 #include <math.h>
+#include <errno.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -536,6 +537,116 @@ const char* mstr_from_float(float i) {
 	return _mstr_result;
 }
 
+const char* mstr_from_int64(int64_t value, int base) {
+	// check that the base is valid
+	if (base < 2 || base > 36)
+		base = 10;
+
+	char* ptr = _mstr_result, *ptr1 = _mstr_result, tmp_char;
+	/* Accumulate as unsigned so LLONG_MIN (which has no positive int64
+	 * counterpart) formats correctly without signed-overflow UB. */
+	uint64_t uvalue;
+	bool neg = false;
+	if (value < 0) {
+		neg = true;
+		uvalue = (uint64_t)(-(value + 1)) + 1;
+	} else {
+		uvalue = (uint64_t)value;
+	}
+
+	int tmp_digit;
+	do {
+		tmp_digit = (int)(uvalue % (uint64_t)base);
+		uvalue /= (uint64_t)base;
+		*ptr++ = "0123456789abcdefghijklmnopqrstuvwxyz"[tmp_digit];
+	} while ( uvalue );
+
+	// Apply negative sign
+	if (neg) *ptr++ = '-';
+	*ptr-- = '\0';
+	while (ptr1 < ptr) {
+		tmp_char = *ptr;
+		*ptr--= *ptr1;
+		*ptr1++ = tmp_char;
+	}
+	return _mstr_result;
+}
+
+const char* mstr_from_float64(double d) {
+	/* JS Number::toString(radix 10): NaN/Infinity render as their keyword
+	 * forms; a finite value uses the shortest decimal digit sequence that
+	 * round-trips back to the same double, laid out in plain notation inside
+	 * [1e-6, 1e21) and exponential notation outside it. */
+	if (isnan(d)) {
+		snprintf(_mstr_result, STATIC_mstr_MAX, "NaN");
+		return _mstr_result;
+	}
+	if (isinf(d)) {
+		snprintf(_mstr_result, STATIC_mstr_MAX, d < 0 ? "-Infinity" : "Infinity");
+		return _mstr_result;
+	}
+
+	char* out = _mstr_result;
+	int oi = 0;
+	if (d < 0) { out[oi++] = '-'; d = -d; }
+	if (d == 0.0) { out[oi++] = '0'; out[oi] = 0; return _mstr_result; }
+
+	/* Find the minimal precision p (0..17 significant-1 digits) whose
+	 * scientific rendering parses back to exactly d. %.17e always round-trips
+	 * for any double, so the loop terminates by p == 17 at the latest. */
+	char buf[64];
+	int p;
+	for (p = 0; p <= 17; p++) {
+		snprintf(buf, sizeof(buf), "%.*e", p, d);
+		if (strtod(buf, NULL) == d)
+			break;
+	}
+
+	/* Split "D[.DDDD]e±EE" into its significant digits and base-10 exponent. */
+	char* epos = strchr(buf, 'e');
+	int exp10 = epos ? atoi(epos + 1) : 0;
+	if (epos) *epos = 0;
+	char digits[32];
+	int di = 0;
+	for (char* c = buf; *c; c++) {
+		if (*c == '.') continue;
+		digits[di++] = *c;
+	}
+	digits[di] = 0;
+	int k = di;          // number of significant digits (>= 1)
+	int n = exp10 + 1;   // decimal-point position relative to digits[0]
+
+	if (k <= n && n <= 21) {
+		// Integer with trailing zeros: 1e21 -> "1000000000000000000000"
+		for (int i = 0; i < k; i++) out[oi++] = digits[i];
+		for (int i = 0; i < n - k; i++) out[oi++] = '0';
+	} else if (0 < n && n <= 21) {
+		// Decimal point sits inside the digits: 1.5 -> "1.5"
+		for (int i = 0; i < n; i++) out[oi++] = digits[i];
+		out[oi++] = '.';
+		for (int i = n; i < k; i++) out[oi++] = digits[i];
+	} else if (-6 < n && n <= 0) {
+		// Small magnitude: 1e-6 -> "0.000001"
+		out[oi++] = '0'; out[oi++] = '.';
+		for (int i = 0; i < -n; i++) out[oi++] = '0';
+		for (int i = 0; i < k; i++) out[oi++] = digits[i];
+	} else {
+		// Exponential form: 1e21 -> "1e+21", 1.5e22 -> "1.5e+22"
+		out[oi++] = digits[0];
+		if (k > 1) {
+			out[oi++] = '.';
+			for (int i = 1; i < k; i++) out[oi++] = digits[i];
+		}
+		out[oi++] = 'e';
+		int e = n - 1;
+		if (e < 0) { out[oi++] = '-'; e = -e; }
+		else out[oi++] = '+';
+		oi += snprintf(out + oi, STATIC_mstr_MAX - oi, "%d", e);
+	}
+	out[oi] = 0;
+	return _mstr_result;
+}
+
 int mstr_to_int(const char* str) {
 	int i = 0;
 	if(strstr(str, "0x") != NULL ||
@@ -693,47 +804,79 @@ PC bc_gen_short(bytecode_t* bc, opr_code_t instr, int32_t s) {
 	
 PC bc_gen_str(bytecode_t* bc, opr_code_t instr, const char* str) {
 	uint32_t i = 0;
-	float f = 0.0;
 	const char* s = str;
+	int64_t ll = 0;
+	double dd = 0.0;
 
 	if(instr == INSTR_INT) {
-		if(strstr(str, "0x") != NULL) {
-			/* Hex literals keep their uint32 bit pattern so bit masks such as
-			 * 0xFFFFFFFF still wrap to the intended int32 value. */
-			i = (uint32_t)strtoul(str, NULL, 16);
+		s = NULL;
+		if(strstr(str, "0x") != NULL || strstr(str, "0X") != NULL) {
+			/* Hex literals are non-negative in JS. Fit int32 -> INSTR_INT, else
+			 * int64 -> INSTR_INT64, else the exact double -> INSTR_FLOAT64. */
+			errno = 0;
+			unsigned long long h = strtoull(str, NULL, 16);
+			if(errno == ERANGE || h > 0x7FFFFFFFFFFFFFFFULL) {
+				dd = strtod(str, NULL);
+				instr = INSTR_FLOAT64;
+			}
+			else if(h > 0x7FFFFFFFULL) {
+				ll = (int64_t)h;
+				instr = INSTR_INT64;
+			}
+			else {
+				i = (uint32_t)h; // stays INSTR_INT
+			}
 		}
 		else {
-			/* A decimal integer too large for int32 must not be silently
-			 * truncated (9007199254740991 -> -1). JS has no int32 literal type,
-			 * so promote it to a float, matching how it is represented at
-			 * runtime and keeping Number.MAX_SAFE_INTEGER self-consistent. */
-			long long ll = strtoll(str, NULL, 10);
-			if(ll < -2147483648LL || ll > 2147483647LL) {
-				instr = INSTR_FLOAT;
-				f = (float)(double)ll;
+			/* A decimal integer is stored at the narrowest width that holds it
+			 * exactly: int32 -> INSTR_INT/INSTR_INT_S, int64 -> INSTR_INT64, and
+			 * anything wider (strtoll saturates with ERANGE) -> the double the
+			 * literal denotes via INSTR_FLOAT64. No silent int32 truncation. */
+			errno = 0;
+			ll = strtoll(str, NULL, 10);
+			if(errno == ERANGE) {
+				dd = strtod(str, NULL);
+				instr = INSTR_FLOAT64;
 			}
-			else
-				i = (uint32_t)(int)ll;
+			else if(ll < -2147483648LL || ll > 2147483647LL) {
+				instr = INSTR_INT64;
+			}
+			else {
+				i = (uint32_t)(int)ll; // stays INSTR_INT
+			}
 		}
-		s = NULL;
 	}
 	else if(instr == INSTR_FLOAT) {
-		f = (float)strtod(str, NULL);
+		/* Float literals are canonical doubles now (V_FLOAT64); the lossy
+		 * float32 1-word path is dropped. Math.fround is the only runtime
+		 * producer of float32, never a literal. */
+		dd = strtod(str, NULL);
+		instr = INSTR_FLOAT64;
 		s = NULL;
 	}
-	
+
 	PC ins = bc_bytecode(bc, instr, s);
 	bc_add(bc, ins);
 
 	if(instr == INSTR_INT) {
 		if(i < OFF_MASK) //short int
 			bc->code_buf[bc->cindex-1] = INS(INSTR_INT_S, i);
-		else 	
+		else
 			bc_add(bc, i);
 	}
-	else if(instr == INSTR_FLOAT) {
-		memcpy(&i, &f, sizeof(PC));
-		bc_add(bc, i);
+	else if(instr == INSTR_INT64) {
+		/* 8-byte payload rides along as 2 consecutive PC words; emit and decode
+		 * are symmetric so host byte order is irrelevant. */
+		uint32_t words[2];
+		memcpy(words, &ll, sizeof(words));
+		bc_add(bc, words[0]);
+		bc_add(bc, words[1]);
+	}
+	else if(instr == INSTR_FLOAT64) {
+		uint32_t words[2];
+		memcpy(words, &dd, sizeof(words));
+		bc_add(bc, words[0]);
+		bc_add(bc, words[1]);
 	}
 	return bc->cindex;
 }
@@ -1599,6 +1742,8 @@ static const char* get_typeof(var_t* var) {
 			return "undefined";
 		case V_INT:
 		case V_FLOAT:
+		case V_INT64:
+		case V_FLOAT64:
 			return "number";
 		case V_BOOL: 
 			return "boolean";
@@ -1669,6 +1814,15 @@ inline var_t* var_new_int(vm_t* vm, int i) {
 	return var;
 }
 
+inline var_t* var_new_int64(vm_t* vm, int64_t i) {
+	var_t* var = var_new(vm);
+	var->type = V_INT64;
+	var->value = mario_malloc(sizeof(int64_t));
+	*((int64_t*)var->value) = i;
+	var_set_prototype(var, var_get_prototype(vm->builtin_vars.var_Number));
+	return var;
+}
+
 inline var_t* var_new_null(vm_t* vm) {
 	var_t* var = var_new(vm);
 	var->type = V_NULL;
@@ -1702,6 +1856,15 @@ inline var_t* var_new_float(vm_t* vm, float i) {
 	var->type = V_FLOAT;
 	var->value = mario_malloc(sizeof(float));
 	*((float*)var->value) = i;
+	var_set_prototype(var, var_get_prototype(vm->builtin_vars.var_Number));
+	return var;
+}
+
+inline var_t* var_new_float64(vm_t* vm, double d) {
+	var_t* var = var_new(vm);
+	var->type = V_FLOAT64;
+	var->value = mario_malloc(sizeof(double));
+	*((double*)var->value) = d;
 	var_set_prototype(var, var_get_prototype(vm->builtin_vars.var_Number));
 	return var;
 }
@@ -1752,8 +1915,12 @@ inline var_t* var_set_str(var_t* var, const char* v) {
 inline bool var_get_bool(var_t* var) {
 	if(var == NULL || var->value == NULL)
 		return false;
-	int i = (int)(*(int*)var->value);
-	return i==0 ? false:true;
+	switch(var->type) {
+		case V_INT64:   return *(int64_t*)var->value != 0;
+		case V_FLOAT:   return *(float*)var->value != 0.0f;
+		case V_FLOAT64: return *(double*)var->value != 0.0;
+		default:        return *(int*)var->value != 0; // V_BOOL / V_INT
+	}
 }
 
 /* JS ToBoolean for the logical-assignment operators (`||= &&=`) and any place
@@ -1772,9 +1939,15 @@ static inline bool var_truthy(var_t* v) {
 		case V_BOOL:
 		case V_INT:
 			return *(int*)v->value != 0;
+		case V_INT64:
+			return *(int64_t*)v->value != 0;
 		case V_FLOAT: {
 			float f = *(float*)v->value;
 			return f != 0.0f && f == f; // NaN is falsy
+		}
+		case V_FLOAT64: {
+			double d = *(double*)v->value;
+			return d != 0.0 && d == d; // NaN is falsy
 		}
 		case V_STRING:
 			return var_get_str(v)[0] != 0;
@@ -1790,9 +1963,12 @@ static inline bool var_is_nullish(var_t* v) {
 inline int var_get_int(var_t* var) {
 	if(var == NULL || var->value == NULL)
 		return 0;
-	if(var->type == V_FLOAT)	
-		return (int)(*(float*)var->value);
-	return *(int*)var->value;
+	switch(var->type) {
+		case V_FLOAT:   return (int)(*(float*)var->value);
+		case V_INT64:   return (int)(*(int64_t*)var->value);
+		case V_FLOAT64: return (int)(*(double*)var->value);
+		default:        return *(int*)var->value; // V_INT / V_BOOL
+	}
 }
 
 inline var_t* var_set_int(var_t* var, int v) {
@@ -1807,19 +1983,74 @@ inline var_t* var_set_int(var_t* var, int v) {
 inline float var_get_float(var_t* var) {
 	if(var == NULL || var->value == NULL)
 		return 0.0;
-	
-	if(var->type == V_INT)	
-		return (float)(*(int*)var->value);
-	return *(float*)var->value;
+	switch(var->type) {
+		case V_INT:     return (float)(*(int*)var->value);
+		case V_INT64:   return (float)(*(int64_t*)var->value);
+		case V_FLOAT64: return (float)(*(double*)var->value);
+		default:        return *(float*)var->value; // V_FLOAT
+	}
 }
 
 inline var_t* var_set_float(var_t* var, float v) {
 	var->type = V_FLOAT;
 	if(var->value != NULL)
 		mario_free(var->value);
-	var->value = mario_malloc(sizeof(int));
+	var->value = mario_malloc(sizeof(float));
 	*((float*)var->value) = v;
 	return var;
+}
+
+inline int64_t var_get_int64(var_t* var) {
+	if(var == NULL || var->value == NULL)
+		return 0;
+	switch(var->type) {
+		case V_INT:     return (int64_t)(*(int*)var->value);
+		case V_INT64:   return *(int64_t*)var->value;
+		case V_FLOAT:   return (int64_t)(*(float*)var->value);
+		case V_FLOAT64: return (int64_t)(*(double*)var->value);
+		case V_BOOL:    return (int64_t)(*(int*)var->value);
+		default:        return 0;
+	}
+}
+
+inline var_t* var_set_int64(var_t* var, int64_t v) {
+	var->type = V_INT64;
+	if(var->value != NULL)
+		mario_free(var->value);
+	var->value = mario_malloc(sizeof(int64_t));
+	*((int64_t*)var->value) = v;
+	return var;
+}
+
+inline double var_get_float64(var_t* var) {
+	if(var == NULL || var->value == NULL)
+		return 0.0;
+	switch(var->type) {
+		case V_INT:     return (double)(*(int*)var->value);
+		case V_INT64:   return (double)(*(int64_t*)var->value);
+		case V_FLOAT:   return (double)(*(float*)var->value);
+		case V_FLOAT64: return *(double*)var->value;
+		case V_BOOL:    return (double)(*(int*)var->value);
+		default:        return 0.0;
+	}
+}
+
+inline var_t* var_set_float64(var_t* var, double v) {
+	var->type = V_FLOAT64;
+	if(var->value != NULL)
+		mario_free(var->value);
+	var->value = mario_malloc(sizeof(double));
+	*((double*)var->value) = v;
+	return var;
+}
+
+/* True for every numeric tag (V_INT/V_INT64/V_FLOAT/V_FLOAT64). Used by the
+ * comparison and arithmetic paths so all four interoperate as JS numbers. */
+inline bool var_is_number(var_t* var) {
+	if(var == NULL)
+		return false;
+	return var->type == V_INT || var->type == V_INT64 ||
+	       var->type == V_FLOAT || var->type == V_FLOAT64;
 }
 
 inline func_t* var_get_func(var_t* var) {
@@ -1882,8 +2113,14 @@ void var_to_str(var_t* var, mstr_t* ret) {
 	case V_INT:
 		mstr_cpy(ret, mstr_from_int(var_get_int(var), 10));
 		break;
+	case V_INT64:
+		mstr_cpy(ret, mstr_from_int64(var_get_int64(var), 10));
+		break;
 	case V_FLOAT:
 		mstr_cpy(ret, mstr_from_float(var_get_float(var)));
+		break;
+	case V_FLOAT64:
+		mstr_cpy(ret, mstr_from_float64(var_get_float64(var)));
 		break;
 	case V_STRING:
 		mstr_cpy(ret, var_get_str(var));
@@ -2873,119 +3110,163 @@ static inline void math_result(vm_t* vm, opr_code_t op, node_t* n, var_t* res) {
 	vm_push(vm, res);
 }
 
+/* Numeric width class for arithmetic promotion. int32/int64 are exact integer
+ * lanes; float32 and double both compute as double (the canonical float). */
+#define NC_NONE  0
+#define NC_INT32 1
+#define NC_INT64 2
+#define NC_FLOAT 3
+
+static inline int num_class(var_t* v) {
+	switch(v->type) {
+		case V_INT:     return NC_INT32;
+		case V_INT64:   return NC_INT64;
+		case V_FLOAT:
+		case V_FLOAT64: return NC_FLOAT;
+		default:        return NC_NONE;
+	}
+}
+
+/* Box an integer arithmetic result at the narrowest exact width. Once it leaves
+ * the JS safe-integer range (|r| > 2^53-1) JS itself could only hold an
+ * approximate double, so spill to V_FLOAT64 to match. */
+static inline var_t* box_int_result(vm_t* vm, int64_t r) {
+	const int64_t SAFE = 9007199254740991LL; // 2^53 - 1
+	if(r > SAFE || r < -SAFE)
+		return var_new_float64(vm, (double)r);
+	if(r >= -2147483648LL && r <= 2147483647LL)
+		return var_new_int(vm, (int)r);
+	return var_new_int64(vm, r);
+}
+
+/* JS ToInt32 for the bitwise operators: exact for the integer lanes, and for a
+ * double it truncates toward zero, wraps modulo 2^32 and reinterprets as signed
+ * (NaN/Infinity -> 0). */
+static inline int32_t to_int32(var_t* v) {
+	double d;
+	switch(v->type) {
+		case V_INT:     return *(int*)v->value;
+		case V_INT64:   return (int32_t)(*(int64_t*)v->value);
+		case V_FLOAT:   d = (double)(*(float*)v->value); break;
+		case V_FLOAT64: d = *(double*)v->value; break;
+		default:        return 0;
+	}
+	if(isnan(d) || isinf(d))
+		return 0;
+	double m = fmod(trunc(d), 4294967296.0);
+	int64_t i = (int64_t)m;
+	if(i < 0)
+		i += 4294967296LL;
+	return (int32_t)(uint32_t)i;
+}
+
+/* Compute a (+|-|*) b in int64; return true on signed overflow (the caller then
+ * falls back to double, which is what JS does beyond the exact int64 range). */
+static inline bool int64_arith(opr_code_t op, int64_t a, int64_t b, int64_t* out) {
+	if(op == INSTR_PLUS || op == INSTR_PLUSEQ) {
+		if((b > 0 && a > INT64_MAX - b) || (b < 0 && a < INT64_MIN - b)) return true;
+		*out = a + b; return false;
+	}
+	if(op == INSTR_MINUS || op == INSTR_MINUSEQ) {
+		if((b < 0 && a > INT64_MAX + b) || (b > 0 && a < INT64_MIN + b)) return true;
+		*out = a - b; return false;
+	}
+	// multiply
+	if(a == 0 || b == 0) { *out = 0; return false; }
+	if(a > 0) {
+		if(b > 0) { if(a > INT64_MAX / b) return true; }
+		else      { if(b < INT64_MIN / a) return true; }
+	} else {
+		if(b > 0) { if(a < INT64_MIN / b) return true; }
+		else      { if(b < INT64_MAX / a) return true; }
+	}
+	*out = a * b; return false;
+}
+
 static inline void math_op(vm_t* vm, opr_code_t op, var_t* v1, var_t* v2, node_t* n) {
 	if(v1 == NULL || v2 == NULL) {
 		vm_push(vm, var_new(vm));
 		return;
 	}
 
-	//ES6 exponent operator ** (right-assoc handled by compiler)
+	int c1 = num_class(v1);
+	int c2 = num_class(v2);
+
+	//ES6 exponent operator ** : always double pow, box integral results exactly.
 	if(op == INSTR_POW || op == INSTR_POWEQ) {
-		double b = 0.0, e = 0.0;
-		if(v1 != NULL && v1->value != NULL) {
-			if(v1->type == V_FLOAT) b = *(float*)v1->value;
-			else if(v1->type == V_INT) b = (double)(*(int*)v1->value);
-		}
-		if(v2 != NULL && v2->value != NULL) {
-			if(v2->type == V_FLOAT) e = *(float*)v2->value;
-			else if(v2->type == V_INT) e = (double)(*(int*)v2->value);
-		}
+		double b = (c1 == NC_NONE) ? 0.0 : var_get_float64(v1);
+		double e = (c2 == NC_NONE) ? 0.0 : var_get_float64(v2);
 		double r = pow(b, e);
-		/* Keep an int result when the base is an int and the exponent is a
-		 * non-negative whole number whose power still fits an int. This makes
-		 * `5 ** 0` (e.g. `5 ** null`, null -> 0) the int 1, so Object.is(1, x)
-		 * holds, while `2 ** 0.5` / `2 ** -1` stay floats. */
-		bool integral = (v1->type == V_INT && e >= 0 && e == floor(e) && r == (double)(int)r);
-		//Build a fresh result; **= must not write into v1 (see math_result()).
-		math_result(vm, op, n, integral ? var_new_int(vm, (int)r) : var_new_float(vm, (float)r));
+		/* Whole-number results inside the int64 range are boxed as integers
+		 * (5 ** 0 -> int 1, 2 ** 50 -> int64); box_int_result() still spills
+		 * past 2^53 so 2 ** 53 matches the JS double. */
+		if(!isnan(r) && !isinf(r) && r == floor(r) && fabs(r) < 9223372036854775808.0)
+			math_result(vm, op, n, box_int_result(vm, (int64_t)r));
+		else
+			math_result(vm, op, n, var_new_float64(vm, r));
 		return;
 	}
 
-	//do int
-	if(v1->type == V_INT && v2->type == V_INT) {
-		int i1, i2, ret = 0;
-		i1 = *(int*)v1->value;
-		i2 = *(int*)v2->value;
-
+	//Bitwise ops use JS ToInt32/ToUint32 semantics: the result is a 32-bit
+	//integer regardless of operand width, so they never promote to int64/double.
+	if((op == INSTR_AND || op == INSTR_OR || op == INSTR_XOR ||
+	    op == INSTR_LSHIFT || op == INSTR_RSHIFT || op == INSTR_URSHIFT) &&
+	   c1 != NC_NONE && c2 != NC_NONE) {
+		int32_t a = to_int32(v1);
+		int32_t b = to_int32(v2);
+		int32_t sh = b & 31;
 		switch(op) {
-			case INSTR_PLUS: 
-			case INSTR_PLUSEQ: 
-				ret = (i1 + i2);
-				break; 
-			case INSTR_MINUS: 
-			case INSTR_MINUSEQ: 
-				ret = (i1 - i2);
-				break; 
-			case INSTR_DIV: 
-			case INSTR_DIVEQ: 
-				ret = (i1 / i2);
-				break; 
-			case INSTR_MULTI: 
-			case INSTR_MULTIEQ: 
-				ret = (i1 * i2);
-				break; 
-			case INSTR_MOD: 
-			case INSTR_MODEQ: 
-				ret = i1 % i2;
-				break; 
-			case INSTR_RSHIFT: 
-				ret = i1 >> i2;
-				break; 
-			case INSTR_LSHIFT: 
-				ret = i1 << i2;
-				break; 
-			case INSTR_AND: 
-				ret = i1 & i2;
-				break; 
-			case INSTR_OR: 
-				ret = i1 | i2;
-				break; 
+			case INSTR_AND:     math_result(vm, op, n, var_new_int(vm, a & b)); return;
+			case INSTR_OR:      math_result(vm, op, n, var_new_int(vm, a | b)); return;
+			case INSTR_XOR:     math_result(vm, op, n, var_new_int(vm, a ^ b)); return;
+			case INSTR_LSHIFT:  math_result(vm, op, n, var_new_int(vm, a << sh)); return;
+			case INSTR_RSHIFT:  math_result(vm, op, n, var_new_int(vm, a >> sh)); return;
+			case INSTR_URSHIFT: {
+				uint32_t ur = ((uint32_t)a) >> sh; // unsigned: 0..2^32-1
+				math_result(vm, op, n, box_int_result(vm, (int64_t)ur));
+				return;
+			}
 		}
-
-		math_result(vm, op, n, var_new_int(vm, ret));
-		return;
 	}
 
-	//do float - both operands must really be numeric, otherwise a string
-	//operand falls into the `else //INT` arms below and has its byte buffer
-	//read as a 4-byte int (e.g. `"x=" + 1.5`).
-	if((v1->type == V_FLOAT || v2->type == V_FLOAT) &&
-			(v1->type == V_INT || v1->type == V_FLOAT) &&
-			(v2->type == V_INT || v2->type == V_FLOAT)) {
-		float f1, f2, ret = 0.0;
-
-		if(v1->type == V_FLOAT)
-			f1 = *(float*)v1->value;
-		else //INT
-			f1 = (float) *(int*)v1->value;
-
-		if(v2->type == V_FLOAT)
-			f2 = *(float*)v2->value;
-		else //INT
-			f2 = (float) *(int*)v2->value;
-
-		switch(op) {
-			case INSTR_PLUS: 
-			case INSTR_PLUSEQ: 
-				ret = (f1 + f2);
-				break; 
-			case INSTR_MINUS: 
-			case INSTR_MINUSEQ: 
-				ret = (f1 - f2);
-				break; 
-			case INSTR_DIV: 
-			case INSTR_DIVEQ: 
-				ret = (f1 / f2);
-				break; 
-			case INSTR_MULTI: 
-			case INSTR_MULTIEQ: 
-				ret = (f1 * f2);
-				break; 
+	// Arithmetic + - * / % when both operands are numeric.
+	if(c1 != NC_NONE && c2 != NC_NONE) {
+		// Division always yields a double in JS (IEEE handles /0 -> Inf/NaN).
+		if(op == INSTR_DIV || op == INSTR_DIVEQ) {
+			math_result(vm, op, n, var_new_float64(vm, var_get_float64(v1) / var_get_float64(v2)));
+			return;
 		}
-
-		/* Always build a fresh var: writing the float back into v1 would leave a
-		 * V_INT lvalue holding float bits (e.g. `var x = 1; x += 0.5;`). */
-		math_result(vm, op, n, var_new_float(vm, ret));
+		if(c1 == NC_FLOAT || c2 == NC_FLOAT) {
+			// Any float operand -> double arithmetic (canonical V_FLOAT64).
+			double d1 = var_get_float64(v1), d2 = var_get_float64(v2), r = 0.0;
+			switch(op) {
+				case INSTR_PLUS:   case INSTR_PLUSEQ:   r = d1 + d2; break;
+				case INSTR_MINUS:  case INSTR_MINUSEQ:  r = d1 - d2; break;
+				case INSTR_MULTI:  case INSTR_MULTIEQ:  r = d1 * d2; break;
+				case INSTR_MOD:    case INSTR_MODEQ:    r = fmod(d1, d2); break;
+			}
+			math_result(vm, op, n, var_new_float64(vm, r));
+			return;
+		}
+		// Both integral (int32/int64): compute in int64, spill to double on
+		// overflow; modulo stays integral (JS `%` truncates).
+		int64_t a = var_get_int64(v1), b = var_get_int64(v2);
+		if(op == INSTR_MOD || op == INSTR_MODEQ) {
+			if(b == 0) { math_result(vm, op, n, var_new_float64(vm, NAN)); return; }
+			int64_t r = (a == INT64_MIN && b == -1) ? 0 : (a % b);
+			math_result(vm, op, n, box_int_result(vm, r));
+			return;
+		}
+		int64_t r;
+		if(int64_arith(op, a, b, &r)) {
+			double da = (double)a, db = (double)b, dr;
+			if(op == INSTR_PLUS || op == INSTR_PLUSEQ) dr = da + db;
+			else if(op == INSTR_MINUS || op == INSTR_MINUSEQ) dr = da - db;
+			else dr = da * db;
+			math_result(vm, op, n, var_new_float64(vm, dr));
+		} else {
+			math_result(vm, op, n, box_int_result(vm, r));
+		}
 		return;
 	}
 
@@ -3032,66 +3313,47 @@ static inline void compare(vm_t* vm, opr_code_t op, var_t* v1, var_t* v2) {
         return;
     }
     
-	//do int
-	if(v1->type == V_INT && v2->type == V_INT) {
-		register int i1, i2;
-		i1 = *(int*)v1->value;
-		i2 = *(int*)v2->value;
-
+	// Both integers (int32/int64): compare exactly in int64 (no double rounding).
+	if((v1->type == V_INT || v1->type == V_INT64) &&
+	   (v2->type == V_INT || v2->type == V_INT64)) {
+		int64_t i1 = var_get_int64(v1);
+		int64_t i2 = var_get_int64(v2);
 		bool i = false;
 		switch(op) {
-			case INSTR_EQ: 
-			case INSTR_TEQ:
-				i = (i1 == i2);
-				break; 
-			case INSTR_NEQ: 
-			case INSTR_NTEQ:
-				i = (i1 != i2);
-				break; 
-			case INSTR_LES: 
-				i = (i1 < i2);
-				break; 
-			case INSTR_GRT: 
-				i = (i1 > i2);
-				break; 
-			case INSTR_LEQ: 
-				i = (i1 <= i2);
-				break; 
-			case INSTR_GEQ: 
-				i = (i1 >= i2);
-				break; 
+			case INSTR_EQ:
+			case INSTR_TEQ:  i = (i1 == i2); break;
+			case INSTR_NEQ:
+			case INSTR_NTEQ: i = (i1 != i2); break;
+			case INSTR_LES:  i = (i1 < i2); break;
+			case INSTR_GRT:  i = (i1 > i2); break;
+			case INSTR_LEQ:  i = (i1 <= i2); break;
+			case INSTR_GEQ:  i = (i1 >= i2); break;
 		}
-		if(i)
-			vm_push(vm, vm->builtin_vars.var_true);
-		else
-			vm_push(vm, vm->builtin_vars.var_false);
+		vm_push(vm, i ? vm->builtin_vars.var_true : vm->builtin_vars.var_false);
 		return;
 	}
 
-	
-	register float f1, f2;
-	if(v1->value == NULL)
-		f1 = 0.0;
-	else if(v1->type == V_FLOAT)
-		f1 = *(float*)v1->value;
-	else if(v1->type == V_INT)
-		f1 = (float) *(int*)v1->value;
-	else //non-numeric (string/bool/null): f1 is unused outside the numeric branch.
-		f1 = 0.0;
-
-	if(v2->value == NULL)
-		f2 = 0.0;
-	else if(v2->type == V_FLOAT)
-		f2 = *(float*)v2->value;
-	else if(v2->type == V_INT)
-		f2 = (float) *(int*)v2->value;
-	else //non-numeric (string/bool/null): f2 is unused outside the numeric branch.
-		f2 = 0.0;
+	// Any float involved (or mixed numeric): coerce both to double and compare.
+	if(var_is_number(v1) && var_is_number(v2)) {
+		double f1 = var_get_float64(v1);
+		double f2 = var_get_float64(v2);
+		bool i = false;
+		switch(op) {
+			case INSTR_EQ:
+			case INSTR_TEQ:  i = (f1 == f2); break;
+			case INSTR_NEQ:
+			case INSTR_NTEQ: i = (f1 != f2); break;
+			case INSTR_LES:  i = (f1 < f2); break;
+			case INSTR_GRT:  i = (f1 > f2); break;
+			case INSTR_LEQ:  i = (f1 <= f2); break;
+			case INSTR_GEQ:  i = (f1 >= f2); break;
+		}
+		vm_push(vm, i ? vm->builtin_vars.var_true : vm->builtin_vars.var_false);
+		return;
+	}
 
 	bool i = false;
-	if(v1->type == v2->type || 
-			((v1->type == V_INT || v1->type == V_FLOAT) &&
-			(v2->type == V_INT || v2->type == V_FLOAT))) {
+	if(v1->type == v2->type) {
 		if(v1->type == V_STRING) {
 			switch(op) {
 				case INSTR_EQ: 
@@ -3136,30 +3398,6 @@ static inline void compare(vm_t* vm, opr_code_t op, var_t* v1, var_t* v2) {
 			/* Same-type block: both operands are undefined, which compares equal
 			 * under both == and === (previously fell through to false). */
 			i = (op == INSTR_EQ || op == INSTR_TEQ);
-		}
-		else if(v1->type == V_INT || v1->type == V_FLOAT) {
-			switch(op) {
-				case INSTR_EQ: 
-				case INSTR_TEQ:
-					i = (f1 == f2);
-					break; 
-				case INSTR_NEQ: 
-				case INSTR_NTEQ:
-					i = (f1 != f2);
-					break; 
-				case INSTR_LES: 
-					i = (f1 < f2);
-					break; 
-				case INSTR_GRT: 
-					i = (f1 > f2);
-					break; 
-				case INSTR_LEQ: 
-					i = (f1 <= f2);
-					break; 
-				case INSTR_GEQ: 
-					i = (f1 >= f2);
-					break; 
-			}
 		}
 	}
 	else if((v1->type == V_UNDEF && v2->type == V_NULL) ||
@@ -3734,21 +3972,49 @@ static inline void handle_pop(vm_t* vm, PC ins, opr_code_t instr, uint32_t offse
 
 static inline void handle_neg(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
 	var_t* v = vm_pop2(vm);
-	if(v->type == V_INT) {
-		int n = *(int*)v->value;
-		/* -0 must be a distinct negative zero (Object.is(0,-0) === false), which
-		 * int32 cannot represent. Negating integer 0 yields float -0.0. */
-		if(n == 0)
-			vm_push(vm, var_new_float(vm, -0.0f));
-		else
-			vm_push(vm, var_new_int(vm, -n));
-	}
-	else if(v->type == V_FLOAT) {
-		float n = *(float*)v->value;
-		n = -n;
-		vm_push(vm, var_new_float(vm, n));
+	switch(v->type) {
+		case V_INT: {
+			int n = *(int*)v->value;
+			/* -0 must be a distinct negative zero (Object.is(0,-0) === false),
+			 * which no integer lane can represent: negating integer 0 yields the
+			 * double -0.0. Other integers box at the narrowest exact width, so
+			 * -(-2147483648) promotes to int64 rather than wrapping. */
+			if(n == 0)
+				vm_push(vm, var_new_float64(vm, -0.0));
+			else
+				vm_push(vm, box_int_result(vm, -(int64_t)n));
+			break;
+		}
+		case V_INT64: {
+			int64_t n = *(int64_t*)v->value;
+			if(n == 0)
+				vm_push(vm, var_new_float64(vm, -0.0));
+			else
+				vm_push(vm, box_int_result(vm, -n));
+			break;
+		}
+		case V_FLOAT:
+			vm_push(vm, var_new_float(vm, -(*(float*)v->value)));
+			break;
+		case V_FLOAT64:
+			vm_push(vm, var_new_float64(vm, -(*(double*)v->value)));
+			break;
+		default:
+			/* -"x" / -undefined etc.: JS yields NaN. Push it so the value stack
+			 * stays balanced (the old code pushed nothing for non-numerics). */
+			vm_push(vm, var_new_float64(vm, NAN));
+			break;
 	}
 	var_unref(v);
+}
+
+/* Box a double as the narrowest exact numeric var: a whole number within the
+ * safe-integer range becomes V_INT/V_INT64, anything else (fractional, NaN,
+ * Infinity, or beyond 2^53) becomes the canonical V_FLOAT64. */
+static inline var_t* var_from_double(vm_t* vm, double d) {
+	if(!isnan(d) && !isinf(d) && d == floor(d) && fabs(d) < 9223372036854775808.0)
+		return box_int_result(vm, (int64_t)d);
+	return var_new_float64(vm, d);
 }
 
 /* Unary plus `+x`: ToNumber. Objects fall back to NaN until Symbol.toPrimitive
@@ -3763,8 +4029,12 @@ static inline void handle_pos(vm_t* vm, PC ins, opr_code_t instr, uint32_t offse
 		case V_INT:
 			vm_push(vm, var_new_int(vm, *(int*)v->value));
 			break;
+		case V_INT64:
+			vm_push(vm, var_new_int64(vm, *(int64_t*)v->value));
+			break;
 		case V_FLOAT:
-			vm_push(vm, var_new_float(vm, *(float*)v->value));
+		case V_FLOAT64:
+			vm_push(vm, var_new_float64(vm, var_get_float64(v)));
 			break;
 		case V_BOOL:
 			vm_push(vm, var_new_int(vm, var_get_bool(v) ? 1 : 0));
@@ -3783,11 +4053,9 @@ static inline void handle_pos(vm_t* vm, PC ins, opr_code_t instr, uint32_t offse
 			double d = strtod(s, &end);
 			while(end != NULL && (*end == ' ' || *end == '\t' || *end == '\n' || *end == '\r')) end++;
 			if(end != NULL && *end != 0)
-				vm_push(vm, var_new_float(vm, (float)NAN)); // trailing junk -> NaN
-			else if(d == (double)(int)d)
-				vm_push(vm, var_new_int(vm, (int)d));
+				vm_push(vm, var_new_float64(vm, NAN)); // trailing junk -> NaN
 			else
-				vm_push(vm, var_new_float(vm, (float)d));
+				vm_push(vm, var_from_double(vm, d));
 			break;
 		}
 		default: // V_UNDEF, V_OBJECT
@@ -3797,27 +4065,29 @@ static inline void handle_pos(vm_t* vm, PC ins, opr_code_t instr, uint32_t offse
 				if(p != NULL) {
 					if(p->type == V_INT)
 						vm_push(vm, var_new_int(vm, var_get_int(p)));
-					else if(p->type == V_FLOAT)
-						vm_push(vm, var_new_float(vm, var_get_float(p)));
+					else if(p->type == V_INT64)
+						vm_push(vm, var_new_int64(vm, var_get_int64(p)));
+					else if(p->type == V_FLOAT || p->type == V_FLOAT64)
+						vm_push(vm, var_new_float64(vm, var_get_float64(p)));
 					else if(p->type == V_BOOL)
 						vm_push(vm, var_new_int(vm, var_get_bool(p) ? 1 : 0));
 					else if(p->type == V_STRING) {
 						const char* ps = var_get_str(p);
 						char* end = NULL;
 						double d = (ps != NULL && *ps != 0) ? strtod(ps, &end) : 0.0;
-						if(d == (double)(int)d)
-							vm_push(vm, var_new_int(vm, (int)d));
+						if(end != NULL && *end != 0)
+							vm_push(vm, var_new_float64(vm, NAN));
 						else
-							vm_push(vm, var_new_float(vm, (float)d));
+							vm_push(vm, var_from_double(vm, d));
 					}
 					else
-						vm_push(vm, var_new_float(vm, (float)NAN));
+						vm_push(vm, var_new_float64(vm, NAN));
 					var_unref(p);
 					var_unref(v);
 					return;
 				}
 			}
-			vm_push(vm, var_new_float(vm, (float)NAN));
+			vm_push(vm, var_new_float64(vm, NAN));
 			break;
 	}
 	var_unref(v);
@@ -3825,9 +4095,10 @@ static inline void handle_pos(vm_t* vm, PC ins, opr_code_t instr, uint32_t offse
 
 static inline void handle_not(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
 	var_t* v = vm_pop2(vm);
-	bool i = false;
-	if(v->type == V_UNDEF || *(int*)v->value == 0)
-		i = true;
+	/* `!x` is the negated JS ToBoolean. var_truthy() handles every type safely;
+	 * the old `*(int*)v->value == 0` mis-read the wider numeric buffers (a small
+	 * double has an all-zero low word) and dereferenced NULL for null/empty. */
+	bool i = !var_truthy(v);
 	var_unref(v);
 	vm_push(vm, i ? vm->builtin_vars.var_true : vm->builtin_vars.var_false);
 }
@@ -3875,9 +4146,12 @@ static inline void handle_math(vm_t* vm, PC ins, opr_code_t instr, uint32_t offs
  * in place - see math_result() for why that would corrupt aliases and cached
  * integer literals. */
 static inline var_t* var_step(vm_t* vm, var_t* v, int step) {
-	if(v->type == V_FLOAT)
-		return var_new_float(vm, *(float*)v->value + (float)step);
-	return var_new_int(vm, *(int*)v->value + step);
+	switch(v->type) {
+		case V_FLOAT:   return var_new_float(vm, *(float*)v->value + (float)step);
+		case V_FLOAT64: return var_new_float64(vm, *(double*)v->value + (double)step);
+		case V_INT64:   return box_int_result(vm, *(int64_t*)v->value + (int64_t)step);
+		default:        return box_int_result(vm, (int64_t)(*(int*)v->value) + (int64_t)step); // V_INT
+	}
 }
 
 /* Shared body of ++/--. `n` is the binding being stepped (NULL when the operand
@@ -3922,7 +4196,8 @@ static inline void vm_step_op(vm_t* vm, PC ins, node_t* n, var_t* v, int step, b
  * as before. Note the old code tested `v->value != NULL`, which treated a string
  * buffer as an int array and incremented its first four bytes. */
 static inline void handle_step(vm_t* vm, PC ins, node_t* n, var_t* v, int step, bool prefix) {
-	if(v->type == V_INT || v->type == V_FLOAT) {
+	if(v->type == V_INT || v->type == V_FLOAT ||
+	   v->type == V_INT64 || v->type == V_FLOAT64) {
 		vm_step_op(vm, ins, n, v, step, prefix);
 		return;
 	}
@@ -4079,6 +4354,39 @@ static inline void handle_float(vm_t* vm, PC ins, opr_code_t instr, uint32_t off
 	var_t* v = var_new_float(vm, *(float*)(&code[vm->pc++]));
 	if(try_var_cache(vm, &code[vm->pc-2], v))
 		code[vm->pc-1] = INSTR_NIL;
+	vm_push(vm, v);
+}
+
+static inline void handle_int64(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
+	register PC* code = vm->bc.code_buf;
+	/* 2-word payload reassembled symmetrically with bc_gen_str's emit. */
+	uint32_t words[2];
+	words[0] = code[vm->pc];
+	words[1] = code[vm->pc+1];
+	vm->pc += 2;
+	int64_t ll;
+	memcpy(&ll, words, sizeof(ll));
+	var_t* v = var_new_int64(vm, ll);
+	if(try_var_cache(vm, &code[vm->pc-3], v)) {
+		code[vm->pc-2] = INSTR_NIL;
+		code[vm->pc-1] = INSTR_NIL;
+	}
+	vm_push(vm, v);
+}
+
+static inline void handle_float64(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
+	register PC* code = vm->bc.code_buf;
+	uint32_t words[2];
+	words[0] = code[vm->pc];
+	words[1] = code[vm->pc+1];
+	vm->pc += 2;
+	double dd;
+	memcpy(&dd, words, sizeof(dd));
+	var_t* v = var_new_float64(vm, dd);
+	if(try_var_cache(vm, &code[vm->pc-3], v)) {
+		code[vm->pc-2] = INSTR_NIL;
+		code[vm->pc-1] = INSTR_NIL;
+	}
 	vm_push(vm, v);
 }
 
@@ -5502,6 +5810,8 @@ static void init_instr_table(void) {
 	instr_table[INSTR_INT] = handle_int;
 	instr_table[INSTR_INT_S] = handle_int_s;
 	instr_table[INSTR_FLOAT] = handle_float;
+	instr_table[INSTR_INT64] = handle_int64;
+	instr_table[INSTR_FLOAT64] = handle_float64;
 	instr_table[INSTR_STR] = handle_str;
 	instr_table[INSTR_ARRAY_AT] = handle_array_at;
 	instr_table[INSTR_ARRAY_AT_M] = handle_array_at_m;
@@ -5556,6 +5866,8 @@ static void init_instr_table(void) {
 	instr_table[INSTR_OOR] = handle_logic;
 	instr_table[INSTR_AND] = handle_math;
 	instr_table[INSTR_OR] = handle_math;
+	instr_table[INSTR_XOR] = handle_math;
+	instr_table[INSTR_URSHIFT] = handle_math;
 
 	instr_table[INSTR_TEQ] = handle_compare;
 	instr_table[INSTR_NTEQ] = handle_compare;
@@ -5842,6 +6154,11 @@ bool get_bool(var_t* var, const char* name) {
 float get_float(var_t* var, const char* name) {
 	var_t* v = get_obj(var, name);
 	return v == NULL ? 0 : var_get_float(v);
+}
+
+double get_float64(var_t* var, const char* name) {
+	var_t* v = get_obj(var, name);
+	return v == NULL ? 0 : var_get_float64(v);
 }
 
 var_t* get_obj(var_t* var, const char* name) {

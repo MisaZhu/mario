@@ -26,7 +26,7 @@ void        mario_debug(const char *format, ...);
 void        mario_printf(const char *format, ...);
 
 /**====== array functions. ======*/
-#define STATIC_mstr_MAX 32
+#define STATIC_mstr_MAX 48
 typedef void (*free_func_t)(void* p);
 
 typedef struct st_array {
@@ -100,6 +100,8 @@ char*       mstr_add_float(mstr_t* str, float f);
 void        mstr_free(mstr_t* str);
 const char* mstr_from_int(int i, int base);
 const char* mstr_from_float(float f);
+const char* mstr_from_int64(int64_t i, int base);
+const char* mstr_from_float64(double d);
 const char* mstr_from_bool(bool b);
 int         mstr_to_int(const char* str);
 float       mstr_to_float(const char* str);
@@ -259,6 +261,8 @@ typedef struct st_bytecode {
 #define INSTR_ARRAY_AT_M   0x072 // ARRAT_M : subscript that keeps the receiver (push receiver then member) for `obj[k](..)`
 #define INSTR_CALLXO       0x073 // CALLXO $n: call the function value on the stack with the receiver beneath it (`obj[k](..)`)
 #define INSTR_CALLXO_SPREAD 0x074 // CALLXO_SPREAD : pop args array, call the func value beneath it with the receiver beneath that (`obj[k](...a)`)
+#define INSTR_INT64        0x075 // INT64 lo,hi   : push an int64 literal held in 2 consecutive PC words
+#define INSTR_FLOAT64      0x076 // FLOAT64 lo,hi : push a double literal held in 2 consecutive PC words
 
 #define INSTR_MAX          0x090 // Maximum instruction opcode value
 
@@ -291,6 +295,8 @@ extern const char* _mario_lang;
 #define V_OBJECT 4
 #define V_BOOL   5
 #define V_NULL   6
+#define V_INT64  7  // int64_t   (exact large integers: 2^31..2^63-1)
+#define V_FLOAT64 8  // double    (canonical float: every float literal / fractional result)
 
 #define V_ST_FREE      0
 #define V_ST_GC_FREE   1
@@ -537,6 +543,13 @@ var_t*      var_set_int(var_t* var, int v);
 bool        var_get_bool(var_t* var);
 float       var_get_float(var_t* var);
 var_t*      var_set_float(var_t* var, float v);
+var_t*      var_new_int64(vm_t* vm, int64_t i);
+int64_t     var_get_int64(var_t* var);
+var_t*      var_set_int64(var_t* var, int64_t v);
+var_t*      var_new_float64(vm_t* vm, double d);
+double      var_get_float64(var_t* var);
+var_t*      var_set_float64(var_t* var, double v);
+bool        var_is_number(var_t* var);
 func_t*     var_get_func(var_t* var);
 var_t*      var_get_prototype(var_t* var);
 void        var_set_prototype(var_t* var, var_t* proto);
@@ -595,6 +608,7 @@ void*       get_raw(var_t* obj, const char* name);
 const char* get_str(var_t* obj, const char* name);
 int         get_int(var_t* obj, const char* name);
 float       get_float(var_t* obj, const char* name);
+double      get_float64(var_t* obj, const char* name);
 bool        get_bool(var_t* obj, const char* name);
 var_t*      get_obj_member(var_t* obj, const char* name);
 var_t*      set_obj_member(var_t* obj, const char* name, var_t* var);

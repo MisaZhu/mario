@@ -17,6 +17,8 @@ static const char* inmstr_str(opr_code_t ins) {
 		case INSTR_INT          : return "INT";
 		case INSTR_INT_S        : return "INTS";
 		case INSTR_FLOAT        : return "FLOAT";
+		case INSTR_INT64        : return "INT64";
+		case INSTR_FLOAT64      : return "FLOAT64";
 		case INSTR_STR          : return "STR";
 		case INSTR_ARRAY_AT     : return "ARRAT";
 		case INSTR_ARRAY        : return "ARR";
@@ -140,6 +142,26 @@ static PC bc_get_inmstr_str(bytecode_t* bc, PC i, mstr_t* ret) {
 		mstr_append(ret, s);
 		i++;
 	}	
+	else if(instr == INSTR_INT64) {
+		uint32_t words[2];
+		words[0] = bc->code_buf[i+1];
+		words[1] = bc->code_buf[i+2];
+		int64_t ll;
+		memcpy(&ll, words, sizeof(ll));
+		snprintf(s, 128, "\n%08d | 0x%08X %08X ; %" PRId64, i+1, words[0], words[1], ll);
+		mstr_append(ret, s);
+		i += 2;
+	}
+	else if(instr == INSTR_FLOAT64) {
+		uint32_t words[2];
+		words[0] = bc->code_buf[i+1];
+		words[1] = bc->code_buf[i+2];
+		double dd;
+		memcpy(&dd, words, sizeof(dd));
+		snprintf(s, 128, "\n%08d | 0x%08X %08X ; %.17g", i+1, words[0], words[1], dd);
+		mstr_append(ret, s);
+		i += 2;
+	}
 	return i;
 }
 
