@@ -247,8 +247,20 @@ typedef struct st_bytecode {
 #define INSTR_YIELD_STAR   0x066 // YIELD*  : pop an iterable, delegate yields to it, push its return value
 #define INSTR_FUNC_GEN     0x067 // FUNC_GEN: generator function/method definition (body follows like INSTR_FUNC)
 #define INSTR_POS          0x068 // POS     : unary + (ToNumber of the value on the stack)
+#define INSTR_OPT_GET      0x069 // OPT_GET x : optional-chaining member fetch `?.x`; nullish base -> undefined
+#define INSTR_NULLISH      0x06A // NULLISH x : `??` short-circuit; if top is non-nullish jump x (keep it) else pop and fall through
+#define INSTR_OREQ         0x06B // OREQ      : `||=` logical-OR assignment
+#define INSTR_ANDEQ        0x06C // ANDEQ     : `&&=` logical-AND assignment
+#define INSTR_NULLISHEQ    0x06D // NULLISHEQ : `??=` nullish assignment
+#define INSTR_SET_PROTO    0x06E // SET_PROTO : pop v, set the object-under-construction's [[Prototype]] to v (`{__proto__: v}`)
+#define INSTR_FUNC_ARROW   0x06F // FUNC_ARROW: define an ES6 arrow function (lexical this, no prototype, not constructible)
+#define INSTR_GET_ITER     0x070 // GET_ITER  : pop an iterable, push its iterator (GetIterator: obj[Symbol.iterator]())
+#define INSTR_ITER_STEP    0x071 // ITER_STEP : peek iterator, call next(); if done jump offset, else push step.value
+#define INSTR_ARRAY_AT_M   0x072 // ARRAT_M : subscript that keeps the receiver (push receiver then member) for `obj[k](..)`
+#define INSTR_CALLXO       0x073 // CALLXO $n: call the function value on the stack with the receiver beneath it (`obj[k](..)`)
+#define INSTR_CALLXO_SPREAD 0x074 // CALLXO_SPREAD : pop args array, call the func value beneath it with the receiver beneath that (`obj[k](...a)`)
 
-#define INSTR_MAX          0x069 // Maximum instruction opcode value
+#define INSTR_MAX          0x090 // Maximum instruction opcode value
 
 
 PC          bc_gen(bytecode_t* bc, opr_code_t instr);
@@ -290,6 +302,17 @@ extern const char* _mario_lang;
 #define SUPER "super"
 #define CONSTRUCTOR "constructor"
 
+/* ES6 Symbol: a symbol instance carries a hidden own member "@@symkey" whose
+ * string value is the unique property-key the symbol maps to. All symbol keys
+ * share the "@@S:" prefix so they never collide with internal bookkeeping
+ * names or ordinary string keys, and getOwnPropertySymbols can find them. */
+#define SYM_MARKER "@@symkey"
+#define SYMKEY_PREFIX "@@S:"
+#define SYMKEY_ITERATOR "@@S:iterator"
+#define SYMKEY_ASYNCITERATOR "@@S:asyncIterator"
+#define SYMKEY_TOSTRINGTAG "@@S:toStringTag"
+#define SYMKEY_TOPRIMITIVE "@@S:toPrimitive"
+
 struct st_vm;
 
 typedef struct st_var {
@@ -323,6 +346,7 @@ typedef struct st_func {
 	int8_t              regular: 4;
 	int8_t              is_static: 4;
 	int8_t              is_generator: 4; // ES6 `function*` / generator method
+	int8_t              is_arrow: 4;     // ES6 arrow function: lexical `this`, no `prototype`, not constructible
 	PC                  pc;
 	void*               data;
 	m_array_t           args; //argument names
@@ -374,6 +398,7 @@ typedef bool (*compiler_func_t)(bytecode_t *bc, const char* input);
 //scope of vm runing
 typedef struct st_scope {
 	var_t* var;
+	var_t* class_var; // for a class-definition scope: the constructor var (pushed by CLASS_END so class expressions evaluate to the class)
 	PC pc_start; // continue anchor for loop
 	PC pc; // try cache anchor , or break anchor for loop
 	uint32_t is_func: 8;
@@ -399,7 +424,22 @@ typedef struct st_vm {
 	PC                  pc;
 
 	bool                terminated;
+	/* ES6 generator suspension: handle_yield sets yielded + yield_value and the
+	 * running vm_run() returns; gen_resume() (the generator's next()) consumes
+	 * them. yield_delegate carries the iterator of an in-progress `yield*`.
+	 * gen_depth>0 disables the LOAD inline cache while a generator frame runs
+	 * (suspension extends node lifetimes across resumes -> stale cache). */
+	bool                yielded;
+	var_t*              yield_value;
+	var_t*              yield_delegate;
+	/* An exception raised inside a native function (vm_throw_native): func_call
+	 * delivers it to the nearest try scope after the native returns, keeping the
+	 * value stack balanced (env pop / ret push protocol). */
+	var_t*              native_thrown;
+	uint32_t            gen_depth;
 	var_t*              root;
+	var_t*              new_target; // ES6 `new.target`: the constructor of the in-progress `new`; consumed (bound into env, then cleared) by func_call
+	int32_t             to_str_depth; // guards var_to_str's object->toString() call against unbounded re-entrancy
 
 	m_array_t           included;
 
@@ -508,8 +548,16 @@ var_t*      var_find_own_member_var(var_t* obj, const char* name);
 void        var_to_json_str(var_t*, mstr_t*, int);
 void        var_to_str(var_t*, mstr_t*);
 
+bool        var_is_symbol(var_t* var);
+const char* var_symbol_key(var_t* var);
+var_t*      vm_get_iterator(vm_t* vm, var_t* iterable);
+var_t*      vm_new_array_iterator(vm_t* vm, var_t* arr);
+var_t*      vm_new_string_iterator(vm_t* vm, var_t* str);
+
 void        vm_push(vm_t* vm, var_t* var);
 void        vm_push_node(vm_t* vm, node_t* node);
+bool        vm_pop(vm_t* vm);
+var_t*      vm_pop2(vm_t* vm);
 
 vm_t*       vm_new(compiler_func_t compiler, uint32_t var_cache_size, uint32_t load_ncache_size);
 node_t*     vm_load_node(vm_t* vm, const char* name, bool create);
@@ -531,11 +579,13 @@ void        vm_terminate(vm_t* vm);
 var_t*      vm_new_class(vm_t* vm, const char* cls);
 var_t*      new_obj(vm_t* vm, const char* cls_name, int arg_num);
 void        vm_throw(vm_t* vm, const char* format, ...);
+void        vm_throw_native(vm_t* vm, const char* format, ...);
 node_t*     vm_find(vm_t* vm, const char* name);
 node_t*     vm_find_in_class(var_t* var, const char* name);
 node_t*     vm_reg_var(vm_t* vm, var_t* cls, const char* name, var_t* var, bool be_const);
 node_t*     vm_reg_static(vm_t* vm, var_t* cls, const char* decl, native_func_t native, void* data);
 node_t*     vm_reg_native(vm_t* vm, var_t* cls, const char* decl, native_func_t native, void* data);
+node_t*     vm_reg_native_on(vm_t* vm, var_t* target, const char* decl, native_func_t native, void* data);
 void        vm_mark_func_scopes(vm_t* vm, var_t* func);
 void        vm_reg_init(vm_t* vm, void (*func)(void*), void* data);
 void        vm_reg_close(vm_t* vm, void (*func)(void*), void* data);
