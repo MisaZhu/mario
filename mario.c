@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <stdarg.h>
+#include <math.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -526,7 +527,7 @@ int mstr_to_int(const char* str) {
 }
 
 float mstr_to_float(const char* str) {
-	return 0.0;//atof(str);
+	return (float)strtod(str, NULL);
 }
 
 void mstr_split(const char* str, char c, m_array_t* array) {
@@ -684,7 +685,7 @@ PC bc_gen_str(bytecode_t* bc, opr_code_t instr, const char* str) {
 		s = NULL;
 	}
 	else if(instr == INSTR_FLOAT) {
-		f = 0.0;//atof(str);
+		f = (float)strtod(str, NULL);
 		s = NULL;
 	}
 	
@@ -803,6 +804,11 @@ static void load_ncache_free(vm_t* vm) {
 		return;
 
 	mario_free(vm->load_ncache.cache);
+	/* Zero the cache so the later var-graph teardown in vm_close() (node_free ->
+	 * load_ncache_invalidate) early-returns on the size==0 guard instead of
+	 * reading the freed array. */
+	vm->load_ncache.cache = NULL;
+	vm->load_ncache.size = 0;
 }
 
 static void load_ncache_invalidate(vm_t* vm, node_t* node) {
@@ -1140,6 +1146,10 @@ inline void var_clean(var_t* var) {
 		return;
 	var->status = V_ST_FREE; //mark as freed for avoid dead loop
 
+	vm_t* vm = var->vm;
+	if(vm != NULL)
+		vm->gc.gc_defer++; //defer opportunistic gc until this object graph is fully torn down.
+
 	if(var->on_destroy != NULL) {
 		var->on_destroy(var);
 	}
@@ -1161,6 +1171,9 @@ inline void var_clean(var_t* var) {
 	memset(var, 0, sizeof(var_t));
 	var->next = next;
 	var->prev = prev;
+
+	if(vm != NULL)
+		vm->gc.gc_defer--;
 }
 
 static inline void add_to_free(var_t* var) {
@@ -1187,7 +1200,11 @@ static inline void add_to_gc(var_t* var) {
 	var->status = V_ST_GC;
 	vm->gc.gc_vars_num++;
 
-	if(vm->gc.gc_vars_num > GC_TRIG_VAR_NUM_DEF)
+	/* Do not trigger a gc while an object graph is being torn down (var_clean):
+	 * the re-entrant gc's gc_free_free_vars() would mario_free() vars that pending
+	 * node_free() calls in the same teardown still dereference (node->var->vm),
+	 * causing a use-after-free. Defer it to the next add_to_gc outside a teardown. */
+	if(vm->gc.gc_vars_num > GC_TRIG_VAR_NUM_DEF && vm->gc.gc_defer == 0)
 		gc(vm, false);
 }
 
@@ -1256,6 +1273,22 @@ static inline void gc_mark(var_t* var, bool mark) {
 
   	// Use hash map iteration to mark all children
   	hash_map_iterate(&var->children, gc_mark_callback, &mark);
+
+	/* A function holds a strong reference to the scope it was returned out of
+	 * (func_set_closure), and that scope is not one of its children, so the walk
+	 * above never reaches it. Without this pass a closure's captured env is
+	 * swept while the function still reads and writes through it. The gc_marking
+	 * test is the same cycle guard gc_mark_callback() uses - the env owns the
+	 * node that holds this very function. */
+	if(var->is_func) {
+		func_t* func = var_get_func(var);
+		if(func != NULL) {
+			var_t* closure = func->closure.var;
+			if(!var_empty(closure) && closure->gc_marking == false)
+				gc_mark(closure, mark);
+		}
+	}
+
   	var->gc_marking = false;
 }
 
@@ -1296,6 +1329,22 @@ static inline void gc_mark_stack(vm_t* vm, bool mark) {
 	}
 }
 
+/* Live scopes are gc roots too. A scope var is referenced only by its scope_t,
+ * so without this pass the collector can not see it: object/array literals
+ * (handle_obj) and block scopes (handle_block) build their var behind a scope
+ * that is never pushed on the value stack, unlike a call env, which func_call()
+ * parks there with `vm_push(vm, env); //avoid for gc`. Any var such a scope owns
+ * is then swept while its node still points at it, and the next marking pass
+ * dereferences freed memory. */
+static inline void gc_mark_scopes(vm_t* vm, bool mark) {
+	int i;
+	for(i=0; i<vm->scope_stack_top; ++i) {
+		scope_t* sc = vm->scope_stack[i];
+		if(sc != NULL)
+			gc_mark(sc->var, mark);
+	}
+}
+
 void var_free(void* p) {
 	var_t* var = (var_t*)p;
 	if(var_empty(var))
@@ -1307,8 +1356,21 @@ void var_free(void* p) {
 	if(var->is_func) {
 		func_t* func = var_get_func(var);
 		if(func != NULL && func->closure.var != NULL) {
-			var_unref(func->closure.var);
+			/* Detach the closure BEFORE releasing it. A function returned out of
+			 * the scope that defines it keeps two links to that same scope: the
+			 * scope still owns the node holding this var, and this var's func_t
+			 * owns the scope. Releasing the scope while both links are live
+			 * re-enters var_free() on this very var (var_unref() frees a var whose
+			 * refs are already 0), and that inner call completes the teardown -
+			 * func_free()ing the func_t and queueing this var for reuse - leaving
+			 * us writing through freed memory and queueing the var a second time. */
+			var_t* closure = func->closure.var;
 			func->closure.var = NULL;
+			func->closure.func = NULL;
+			var_unref(closure);
+			//the release above may have torn this var down completely.
+			if(var_empty(var))
+				return;
 		}
 	}
 
@@ -1369,6 +1431,14 @@ static inline void gc_vars(vm_t* vm) {
 	gc_mark_stack(vm, true); //mark all stacked vars
 	//mario_debug("gc marking cache\n");
 	gc_mark_cache(vm, true); //mark all cached vars
+	gc_mark_scopes(vm, true); //mark all vars owned by a live scope
+	/* builtin singletons (true/false/null) are held only by vm->builtin_vars and
+	 * are NOT members of vm->root, so gc_mark(vm->root) can not reach them. Mark
+	 * them explicitly, otherwise a GC triggered while a compare result is sitting
+	 * in the gc_vars list (pushed then popped) would free them -> use-after-free. */
+	gc_mark(vm->builtin_vars.var_true, true);
+	gc_mark(vm->builtin_vars.var_false, true);
+	gc_mark(vm->builtin_vars.var_null, true);
 
 	//mario_debug("free all unmarked var\n");
 	var_t* v = vm->gc.gc_vars;
@@ -1389,6 +1459,10 @@ static inline void gc_vars(vm_t* vm) {
 	gc_mark_stack(vm, false); //unmark all stacked vars
 	//mario_debug("gc unmarking cache\n");
 	gc_mark_cache(vm, false); //unmark all cached vars
+	gc_mark_scopes(vm, false);
+	gc_mark(vm->builtin_vars.var_true, false);
+	gc_mark(vm->builtin_vars.var_false, false);
+	gc_mark(vm->builtin_vars.var_null, false);
 
 	//second step: move freed var to free_var_list for reusing.
 	v = vm->gc.gc_vars;
@@ -1922,6 +1996,21 @@ static inline bool vm_pop(vm_t* vm) {
 	return true;
 }
 
+/* Peek the top of the stack as a node WITHOUT popping it. vm_pop2() unwraps a
+ * node to its var and throws the binding away, but ++/-- and the compound
+ * assignments need the node to write a fresh value back through it. Returns
+ * NULL when the top entry is a plain var (an rvalue) - nothing to assign to. */
+static inline node_t* vm_peek_node(vm_t* vm) {
+	if(vm->stack_top == 0)
+		return NULL;
+	void* p = vm->stack[vm->stack_top-1];
+	if(p == NULL)
+		return NULL;
+	if(*(int8_t*)p != 1) //not a node!
+		return NULL;
+	return (node_t*)p;
+}
+
 static inline node_t* vm_pop2node(vm_t* vm) {
 	if(vm->stack_top == 0)
 		return NULL;
@@ -2287,7 +2376,6 @@ static var_t* var_new_func(vm_t* vm, func_t* func) {
 	var->is_func = 1;
 	var->free_func = func_free;
 	var->value = func;
-
 	var_t* proto = var_get_prototype(vm->builtin_vars.var_Object);
 	if(proto == NULL)
 		proto = var_new_obj_no_proto(vm, NULL, NULL);
@@ -2336,6 +2424,13 @@ static bool func_call(vm_t* vm, var_t* obj, var_t* func_var, int arg_num) {
 		var_add(env, THIS, obj);
 	}
 
+	/* env/args are freshly built and not yet rooted on the stack (that happens
+	 * with vm_push(env) below). A gc triggered while collecting arguments would
+	 * see the just-added argument values as unreachable and free them, leaving
+	 * dangling pointers in args (UAF at var_array_reverse). Defer it until env
+	 * is pushed. */
+	vm->gc.gc_defer++;
+
 	int32_t i;
 	for(i=arg_num; i>func->args.size; i--) {
 		var_t* v = vm_pop2(vm);
@@ -2369,6 +2464,7 @@ static bool func_call(vm_t* vm, var_t* obj, var_t* func_var, int arg_num) {
 
 	var_t* ret = NULL;
 	vm_push(vm, env); //avoid for gc
+	vm->gc.gc_defer--; //env is now rooted on the stack; gc is safe again.
 	if(func->native != NULL) { //native function
 		ret = func->native(vm, env, func->data);
 		if(ret == NULL)
@@ -2400,7 +2496,7 @@ static bool func_call(vm_t* vm, var_t* obj, var_t* func_var, int arg_num) {
 	return true;
 }
 
-static var_t* func_def(vm_t* vm, bool regular, bool is_static) {
+static var_t* func_def(vm_t* vm, int regular, bool is_static) {
 	func_t* func = func_new();
 	func->regular = regular;
 	func->is_static = is_static;
@@ -2424,12 +2520,54 @@ static var_t* func_def(vm_t* vm, bool regular, bool is_static) {
 	return ret;
 }
 
-static inline void math_op(vm_t* vm, opr_code_t op, var_t* v1, var_t* v2) {
-	/*if(v1->value == NULL || v2->value == NULL) {
-		vm_push(vm, var_new());
+static inline bool is_compound_assign(opr_code_t op) {
+	switch(op) {
+		case INSTR_PLUSEQ:
+		case INSTR_MINUSEQ:
+		case INSTR_MULTIEQ:
+		case INSTR_DIVEQ:
+		case INSTR_MODEQ:
+		case INSTR_POWEQ:
+			return true;
+		default:
+			return false;
+	}
+}
+
+/* Publish an arithmetic result. For a compound assignment (`x += y`) the freshly
+ * built result var is installed through the lvalue's node instead of being
+ * written into v1 in place: one var_t is shared by every alias of a binding
+ * (`var b = a;` leaves both nodes referencing the same var) and integer literals
+ * are shared through vm->var_cache, so an in-place write corrupts all of them. */
+static inline void math_result(vm_t* vm, opr_code_t op, node_t* n, var_t* res) {
+	if(n != NULL && is_compound_assign(op))
+		node_replace(n, res); //the node takes its own reference to res.
+	vm_push(vm, res);
+}
+
+static inline void math_op(vm_t* vm, opr_code_t op, var_t* v1, var_t* v2, node_t* n) {
+	if(v1 == NULL || v2 == NULL) {
+		vm_push(vm, var_new(vm));
 		return;
-	}	
-	*/
+	}
+
+	//ES6 exponent operator ** (right-assoc handled by compiler)
+	if(op == INSTR_POW || op == INSTR_POWEQ) {
+		double b = 0.0, e = 0.0;
+		if(v1 != NULL && v1->value != NULL) {
+			if(v1->type == V_FLOAT) b = *(float*)v1->value;
+			else if(v1->type == V_INT) b = (double)(*(int*)v1->value);
+		}
+		if(v2 != NULL && v2->value != NULL) {
+			if(v2->type == V_FLOAT) e = *(float*)v2->value;
+			else if(v2->type == V_INT) e = (double)(*(int*)v2->value);
+		}
+		double r = pow(b, e);
+		bool integral = (v1->type == V_INT && v2->type == V_INT && e >= 0);
+		//Build a fresh result; **= must not write into v1 (see math_result()).
+		math_result(vm, op, n, integral ? var_new_int(vm, (int)r) : var_new_float(vm, (float)r));
+		return;
+	}
 
 	//do int
 	if(v1->type == V_INT && v2->type == V_INT) {
@@ -2472,24 +2610,16 @@ static inline void math_op(vm_t* vm, opr_code_t op, var_t* v1, var_t* v2) {
 				break; 
 		}
 
-		var_t* v;
-		if(op == INSTR_PLUSEQ || 
-				op == INSTR_MINUSEQ ||
-				op == INSTR_DIVEQ ||
-				op == INSTR_MULTIEQ ||
-				op == INSTR_MODEQ)  {
-			v = v1;
-			*(int*)v->value = ret;
-		}
-		else {
-			v = var_new_int(vm, ret);
-		}
-		vm_push(vm, v);
+		math_result(vm, op, n, var_new_int(vm, ret));
 		return;
 	}
 
-	//do float
-	if(v1->type == V_FLOAT || v2->type == V_FLOAT) {
+	//do float - both operands must really be numeric, otherwise a string
+	//operand falls into the `else //INT` arms below and has its byte buffer
+	//read as a 4-byte int (e.g. `"x=" + 1.5`).
+	if((v1->type == V_FLOAT || v2->type == V_FLOAT) &&
+			(v1->type == V_INT || v1->type == V_FLOAT) &&
+			(v2->type == V_INT || v2->type == V_FLOAT)) {
 		float f1, f2, ret = 0.0;
 
 		if(v1->type == V_FLOAT)
@@ -2521,45 +2651,33 @@ static inline void math_op(vm_t* vm, opr_code_t op, var_t* v1, var_t* v2) {
 				break; 
 		}
 
-		var_t* v;
-		if(op == INSTR_PLUSEQ || 
-				op == INSTR_MINUSEQ ||
-				op == INSTR_DIVEQ ||
-				op == INSTR_MULTIEQ ||
-				op == INSTR_MODEQ)  {
-			v = v1;
-			*(float*)v->value = ret;
-		}
-		else {
-			v = var_new_float(vm, ret);
-		}
-		vm_push(vm, v);
+		/* Always build a fresh var: writing the float back into v1 would leave a
+		 * V_INT lvalue holding float bits (e.g. `var x = 1; x += 0.5;`). */
+		math_result(vm, op, n, var_new_float(vm, ret));
 		return;
 	}
 
 	//do string + 
 	if(op == INSTR_PLUS || op == INSTR_PLUSEQ) {
-		mstr_t* s = mstr_new((const char*)v1->value);
+		/* Convert the left operand to a string properly. Casting v1->value to
+		 * char* directly produced garbage when v1 was a non-string, e.g.
+		 * `5 + "x"` read the int's raw bytes as a C string. */
+		mstr_t* s = mstr_new("");
+		var_to_str(v1, s);
 		mstr_t* json = mstr_new("");
 		var_to_str(v2, json);
 		mstr_append(s, json->cstr);
 		mstr_free(json);
 
-		var_t* v;
-		if(op == INSTR_PLUSEQ) {
-			v = v1;
-			char* p = (char*)v->value;
-			v->value = mario_malloc(s->len+1);
-			memcpy(v->value, s->cstr, s->len+1);
-			if(p != NULL)
-				mario_free(p);
-		}
-		else {
-			v = var_new_str(vm, s->cstr);
-		}
+		var_t* v = var_new_str(vm, s->cstr);
 		mstr_free(s);
-		vm_push(vm, v);
+		math_result(vm, op, n, v);
+		return;
 	}
+
+	/* Neither numeric nor a concatenation (e.g. `"a" - 1`, where JS yields
+	 * NaN). Push undefined so the value stack stays balanced. */
+	vm_push(vm, var_new(vm));
 }
 
 static inline void compare(vm_t* vm, opr_code_t op, var_t* v1, var_t* v2) {
@@ -2624,15 +2742,19 @@ static inline void compare(vm_t* vm, opr_code_t op, var_t* v1, var_t* v2) {
 		f1 = 0.0;
 	else if(v1->type == V_FLOAT)
 		f1 = *(float*)v1->value;
-	else //INT
+	else if(v1->type == V_INT)
 		f1 = (float) *(int*)v1->value;
+	else //non-numeric (string/bool/null): f1 is unused outside the numeric branch.
+		f1 = 0.0;
 
 	if(v2->value == NULL)
 		f2 = 0.0;
 	else if(v2->type == V_FLOAT)
 		f2 = *(float*)v2->value;
-	else //INT
+	else if(v2->type == V_INT)
 		f2 = (float) *(int*)v2->value;
+	else //non-numeric (string/bool/null): f2 is unused outside the numeric branch.
+		f2 = 0.0;
 
 	bool i = false;
 	if(v1->type == v2->type || 
@@ -2659,6 +2781,22 @@ static inline void compare(vm_t* vm, opr_code_t op, var_t* v1, var_t* v2) {
 				case INSTR_NEQ: 
 				case INSTR_NTEQ:
 					i = (v2->type != V_NULL);
+					break;
+			}
+		}
+		else if(v1->type == V_BOOL) {
+			/* V_BOOL was not handled here, so `true === true` fell through and
+			 * always yielded false. Compare booleans by value. */
+			bool b1 = var_get_bool(v1);
+			bool b2 = var_get_bool(v2);
+			switch(op) {
+				case INSTR_EQ:
+				case INSTR_TEQ:
+					i = (b1 == b2);
+					break;
+				case INSTR_NEQ:
+				case INSTR_NTEQ:
+					i = (b1 != b2);
 					break;
 			}
 		}
@@ -2697,7 +2835,76 @@ static inline void compare(vm_t* vm, opr_code_t op, var_t* v1, var_t* v2) {
 		vm_push(vm, vm->builtin_vars.var_false);
 }
 
-void do_get(vm_t* vm, var_t* v, const char* name) {
+/* ES6 accessors: a getter/setter is a function var whose func_t.regular is
+ * FUNC_GETTER/FUNC_SETTER. When both are defined for one property the getter is
+ * the primary member var and the setter hangs off it as the hidden member
+ * FUNC_SETTER_KEY (see merge_accessor). */
+static inline bool var_is_accessor(var_t* v) {
+	if(v == NULL || !v->is_func)
+		return false;
+	func_t* f = var_get_func(v);
+	return f != NULL && (f->regular == FUNC_GETTER || f->regular == FUNC_SETTER);
+}
+
+/* The getter of an accessor property (NULL when it is write-only). */
+static inline var_t* var_accessor_getter(var_t* v) {
+	if(v == NULL || !v->is_func)
+		return NULL;
+	func_t* f = var_get_func(v);
+	if(f == NULL)
+		return NULL;
+	return (f->regular == FUNC_GETTER) ? v : NULL;
+}
+
+/* The setter of an accessor property (NULL when it is read-only). */
+static inline var_t* var_accessor_setter(var_t* v) {
+	if(v == NULL || !v->is_func)
+		return NULL;
+	func_t* f = var_get_func(v);
+	if(f == NULL)
+		return NULL;
+	if(f->regular == FUNC_SETTER)
+		return v;
+	if(f->regular == FUNC_GETTER)
+		return get_obj(v, FUNC_SETTER_KEY);
+	return NULL;
+}
+
+/* Merge a freshly compiled accessor `acc` into the existing accessor node `ex`
+ * so the property keeps a single primary var (the getter when both exist),
+ * carrying the counterpart as a hidden member. */
+static void merge_accessor(node_t* ex, var_t* acc) {
+	var_t* ex_var = ex->var;
+	var_t* getter = NULL;
+	var_t* setter = NULL;
+	func_t* ef = var_get_func(ex_var);
+	if(ef != NULL) {
+		if(ef->regular == FUNC_GETTER) getter = ex_var;
+		else if(ef->regular == FUNC_SETTER) setter = ex_var;
+	}
+	func_t* af = var_get_func(acc);
+	if(af != NULL) {
+		if(af->regular == FUNC_GETTER) getter = acc;
+		else if(af->regular == FUNC_SETTER) setter = acc;
+	}
+
+	var_t* primary = (getter != NULL) ? getter : setter;
+	if(primary == NULL)
+		return;
+	if(getter != NULL && setter != NULL) {
+		node_t* sn = var_add(getter, FUNC_SETTER_KEY, setter);
+		sn->invisable = 1;
+		sn->be_unenumerable = 1;
+	}
+	if(primary != ex_var)
+		node_replace(ex, primary); //refs primary, releases the node's old var.
+}
+
+/* Member fetch. When `for_write` is set the access is an assignment target: an
+ * accessor property pushes the object (for the setter's `this`) followed by the
+ * node so handle_asign can invoke the setter; a read invokes the getter and
+ * pushes its result. */
+void do_get(vm_t* vm, var_t* v, const char* name, bool for_write) {
 	if(v->type == V_STRING && strcmp(name, "length") == 0) {
 		int len = (int)strlen(var_get_str(v));
 		vm_push(vm, var_new_int(vm, len));
@@ -2710,17 +2917,25 @@ void do_get(vm_t* vm, var_t* v, const char* name) {
 	}	
 
 	node_t* n = var_find_member(v, name);
-	if(n != NULL) {
-		/*if(n->var->type == V_FUNC) {
-			func_t* func = var_get_func(n->var);
-			if(!func->regular) { //class get/set function.
-				func_call(vm, v, funC);
-				return;
-			}
+	if(n != NULL && var_is_accessor(n->var)) {
+		if(for_write) {
+			vm_push(vm, v);        //object for the setter's `this`
+			vm_push_node(vm, n);   //accessor node; handle_asign calls the setter
+			return;
 		}
-		*/
+		var_t* getter = var_accessor_getter(n->var);
+		if(getter != NULL) {
+			var_ref(getter);
+			func_call(vm, v, getter, 0); //pushes the computed value
+			var_unref(getter);
+		}
+		else {
+			vm_push(vm, var_new(vm)); //write-only property reads as undefined
+		}
+		return;
 	}
-	else {
+
+	if(n == NULL) {
 		if(v->type == V_UNDEF)
 			v->type = V_OBJECT;
 
@@ -2735,9 +2950,15 @@ void do_get(vm_t* vm, var_t* v, const char* name) {
 		}
 	}
 
-	vm_push_node(vm, n);
+	/* If v is transient the caller releases it right after we return, which
+	 * would free the node we push (e.g. `getObj().prop`). Push the value in
+	 * that case; keep node semantics for persistent objects so member
+	 * assignment (obj.x = v) can still write through the node. */
+	if(v->refs <= 1)
+		vm_push(vm, n->var);
+	else
+		vm_push_node(vm, n);
 }
-
 static void do_extends(vm_t* vm, var_t* cls_var, const char* super_name) {
 	node_t* n = vm_find_in_scopes(vm, super_name);
 	if(n == NULL) {
@@ -2771,9 +2992,24 @@ var_t* new_obj(vm_t* vm, const char* name, int arg_num) {
 	}
 
 	if(constructor != NULL) {
+		/* Protect obj across func_call: for script constructors the only other
+		 * reference is env's `this`, which is released when func_call pops env.
+		 * Without this guard obj would be freed before we can return it. */
+		var_ref(obj);
 		func_call(vm, obj, constructor, arg_num);
-		obj = vm_pop2(vm);
-		obj->refs--;
+		var_t* ret = vm_pop2(vm); // no unref: ret carries func_call's push ref
+		if(ret != NULL && ret != obj && ret->type == V_OBJECT) {
+			// JS semantics: an explicit object returned from a constructor wins.
+			obj->refs--; // release protection ref (obj discarded)
+			obj = ret;
+			obj->refs--; // release func_call's push ref (matches return contract)
+		}
+		else {
+			// Keep the freshly constructed object; discard the return value.
+			if(ret != NULL)
+				ret->refs--; // release func_call's push ref (ret may == obj for natives)
+			obj->refs--;     // release protection ref
+		}
 	}
 	return obj;
 }
@@ -3097,6 +3333,52 @@ static inline void handle_neg(vm_t* vm, PC ins, opr_code_t instr, uint32_t offse
 	var_unref(v);
 }
 
+/* Unary plus `+x`: ToNumber. Objects fall back to NaN until Symbol.toPrimitive
+ * / valueOf coercion is wired up (see section 12). */
+static inline void handle_pos(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
+	var_t* v = vm_pop2(vm);
+	if(v == NULL) {
+		vm_push(vm, var_new(vm));
+		return;
+	}
+	switch(v->type) {
+		case V_INT:
+			vm_push(vm, var_new_int(vm, *(int*)v->value));
+			break;
+		case V_FLOAT:
+			vm_push(vm, var_new_float(vm, *(float*)v->value));
+			break;
+		case V_BOOL:
+			vm_push(vm, var_new_int(vm, var_get_bool(v) ? 1 : 0));
+			break;
+		case V_NULL:
+			vm_push(vm, var_new_int(vm, 0));
+			break;
+		case V_STRING: {
+			const char* s = var_get_str(v);
+			while(*s == ' ' || *s == '\t' || *s == '\n' || *s == '\r') s++;
+			if(*s == 0) {
+				vm_push(vm, var_new_int(vm, 0));
+				break;
+			}
+			char* end = NULL;
+			double d = strtod(s, &end);
+			while(end != NULL && (*end == ' ' || *end == '\t' || *end == '\n' || *end == '\r')) end++;
+			if(end != NULL && *end != 0)
+				vm_push(vm, var_new_float(vm, (float)NAN)); // trailing junk -> NaN
+			else if(d == (double)(int)d)
+				vm_push(vm, var_new_int(vm, (int)d));
+			else
+				vm_push(vm, var_new_float(vm, (float)d));
+			break;
+		}
+		default: // V_UNDEF, V_OBJECT
+			vm_push(vm, var_new_float(vm, (float)NAN));
+			break;
+	}
+	var_unref(v);
+}
+
 static inline void handle_not(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
 	var_t* v = vm_pop2(vm);
 	bool i = false;
@@ -3125,126 +3407,115 @@ static inline void handle_logic(vm_t* vm, PC ins, opr_code_t instr, uint32_t off
 
 static inline void handle_math(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
 	var_t* v2 = vm_pop2(vm);
+	node_t* n = vm_peek_node(vm); //the lvalue binding, used by the compound assignments.
 	var_t* v1 = vm_pop2(vm);
-	math_op(vm, instr, v1, v2);
+	/* Popping leaves v1/v2 - and the result math_op() builds - invisible to gc(),
+	 * and math_result()'s node_replace() drops the lvalue's old var, which can
+	 * start a collection that sweeps them. See vm_step_op(). */
+	vm->gc.gc_defer++;
+	math_op(vm, instr, v1, v2, n);
 	var_unref(v1);
 	var_unref(v2);
+	vm->gc.gc_defer--;
+}
+
+/* Build a NEW var holding `v` stepped by `step`. The old var is never written to
+ * in place - see math_result() for why that would corrupt aliases and cached
+ * integer literals. */
+static inline var_t* var_step(vm_t* vm, var_t* v, int step) {
+	if(v->type == V_FLOAT)
+		return var_new_float(vm, *(float*)v->value + (float)step);
+	return var_new_int(vm, *(int*)v->value + step);
+}
+
+/* Shared body of ++/--. `n` is the binding being stepped (NULL when the operand
+ * is an rvalue); a prefix op yields the new value, a postfix op the old one.
+ * The INSTR_POP peephole is preserved verbatim: when the result is discarded the
+ * following POP becomes a NIL and this instruction is flagged so later passes
+ * skip it. */
+static inline void vm_step_op(vm_t* vm, PC ins, node_t* n, var_t* v, int step, bool prefix) {
+	register PC* code = vm->bc.code_buf;
+	/* nv, res and v are held only by C locals from here on, so gc() can not see
+	 * them: a var that is neither on the value stack nor reachable from the root
+	 * is swept, and gc_free_free_vars() then hands its memory back. Every
+	 * var_unref() below can start a collection, so keep the collector out until
+	 * the result is back on the stack (the guard func_call() uses for env/args). */
+	vm->gc.gc_defer++;
+	var_t* nv = var_step(vm, v, step);
+	var_ref(nv); //our own reference to nv, dropped at the end (as handle_asign() does).
+	var_t* res = prefix ? nv : v;
+	var_ref(res); //keep the result alive: node_replace() releases the node's old var.
+	if(n != NULL)
+		node_replace(n, nv); //write the new value back through the binding.
+
+	if((ins & INSTR_OPT_CACHE) == 0) {
+		if(OP(code[vm->pc]) != INSTR_POP) {
+			vm_push(vm, res);
+		}
+		else {
+			code[vm->pc] = INSTR_NIL;
+			code[vm->pc-1] |= INSTR_OPT_CACHE;
+		}
+	}
+	else {
+		vm->pc++;
+	}
+	var_unref(res);
+	var_unref(nv); //for a prefix op nv IS res, so it must outlive the push above.
+	var_unref(v);
+	vm->gc.gc_defer--;
+}
+
+/* Only real numbers can be stepped; anything else yields the operand unchanged,
+ * as before. Note the old code tested `v->value != NULL`, which treated a string
+ * buffer as an int array and incremented its first four bytes. */
+static inline void handle_step(vm_t* vm, PC ins, node_t* n, var_t* v, int step, bool prefix) {
+	if(v->type == V_INT || v->type == V_FLOAT) {
+		vm_step_op(vm, ins, n, v, step, prefix);
+		return;
+	}
+	vm_push(vm, v);
+	var_unref(v);
 }
 
 static inline void handle_mminus_pre(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
-	register PC* code = vm->bc.code_buf;
+	node_t* n = vm_peek_node(vm); //the binding to write the stepped value back to.
 	var_t* v = vm_pop2(vm);
-	int *i = (int*)v->value;
-	if(i != NULL) {
-		(*i)--;
-		if((ins & INSTR_OPT_CACHE) == 0) {
-			if(OP(code[vm->pc]) != INSTR_POP) {
-				vm_push(vm, v);
-			}
-			else {
-				code[vm->pc] = INSTR_NIL;
-				code[vm->pc-1] |= INSTR_OPT_CACHE;
-			}
-		}
-		else {
-			vm->pc++;
-		}
+	if(v == NULL) {
+		vm_push(vm, var_new(vm));
+		return;
 	}
-	else {
-		vm_push(vm, v);
-	}
-	var_unref(v);
+	handle_step(vm, ins, n, v, -1, true);
 }
 
 static inline void handle_mminus(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
-	register PC* code = vm->bc.code_buf;
+	node_t* n = vm_peek_node(vm); //the binding to write the stepped value back to.
 	var_t* v = vm_pop2(vm);
 	if(v == NULL) {
 		vm_push(vm, var_new(vm));
 		return;
 	}
-	int *i = (int*)v->value;
-	if(i != NULL) {
-		if((ins & INSTR_OPT_CACHE) == 0) {
-			var_t* v2 = var_new_int(vm, *i);
-			if(OP(code[vm->pc]) != INSTR_POP) {
-				vm_push(vm, v2);
-			}
-			else {
-				code[vm->pc] = INSTR_NIL;
-				code[vm->pc-1] |= INSTR_OPT_CACHE;
-				var_unref(v2);
-			}
-		}
-		else {
-			vm->pc++;
-		}
-		(*i)--;
-	}
-	else {
-		vm_push(vm, v);
-	}
-	var_unref(v);
+	handle_step(vm, ins, n, v, -1, false);
 }
 
 static inline void handle_pplus_pre(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
-	register PC* code = vm->bc.code_buf;
+	node_t* n = vm_peek_node(vm); //the binding to write the stepped value back to.
 	var_t* v = vm_pop2(vm);
 	if(v == NULL) {
 		vm_push(vm, var_new(vm));
 		return;
 	}
-	int *i = (int*)v->value;
-	if(i != NULL) {
-		(*i)++;
-		if((ins & INSTR_OPT_CACHE) == 0) {
-			if(OP(code[vm->pc]) != INSTR_POP) {
-				vm_push(vm, v);
-			}
-			else {
-				code[vm->pc] = INSTR_NIL;
-				code[vm->pc-1] |= INSTR_OPT_CACHE;
-			}
-		}
-		else {
-			vm->pc++;
-		}
-	}
-	else {
-		vm_push(vm, v);
-	}
-	var_unref(v);
+	handle_step(vm, ins, n, v, 1, true);
 }
 
 static inline void handle_pplus(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
-	register PC* code = vm->bc.code_buf;
+	node_t* n = vm_peek_node(vm); //the binding to write the stepped value back to.
 	var_t* v = vm_pop2(vm);
 	if(v == NULL) {
 		vm_push(vm, var_new(vm));
 		return;
 	}
-	int *i = (int*)v->value;
-	if(i != NULL) {
-		if((ins & INSTR_OPT_CACHE) == 0) {
-			var_t* v2 = var_new_int(vm, *i);
-			if(OP(code[vm->pc]) != INSTR_POP) {
-				vm_push(vm, v2);
-			}
-			else {
-				code[vm->pc] = INSTR_NIL;
-				code[vm->pc-1] |= INSTR_OPT_CACHE;
-				var_unref(v2);
-			}
-		}
-		else {
-			vm->pc++;
-		}
-		(*i)++;
-	}
-	else {
-		vm_push(vm, v);
-	}
-	var_unref(v);
+	handle_step(vm, ins, n, v, 1, false);
 }
 
 static inline void handle_return(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
@@ -3280,16 +3551,19 @@ static inline void handle_return(vm_t* vm, PC ins, opr_code_t instr, uint32_t of
 
 static inline void handle_var(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
 	const char* s = bc_getstr(&vm->bc, offset);
-	node_t *node = vm_find(vm, s);
-	if(node != NULL) {
-		//mario_debug("Warning: '%s' has already existed!\n", s);
-	}
-	else {
-		var_t* v = vm_get_scope_var(vm);
-		if(v != NULL) {
-			node = var_add(v, s, NULL);
-		}
-	}
+	/* ES5 `var` is function-scoped, not block-scoped. Hoist the declaration to
+	 * the nearest enclosing function scope (or the global scope), skipping any
+	 * block/loop/try scopes. Otherwise a `var` declared inside a block would be
+	 * destroyed when that block scope pops, deviating from JS semantics
+	 * (e.g. `for(var i=0;..){var x=i;} print(x)` must see x afterwards). */
+	scope_t* sc = vm_get_scope(vm);
+	while(sc != NULL && !sc->is_func)
+		sc = sc->prev;
+	var_t* v = (sc != NULL) ? sc->var : vm->root;
+	if(v == NULL)
+		return;
+	if(var_find_own_member(v, s) == NULL)
+		var_add(v, s, NULL);
 }
 
 static inline void handle_const(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
@@ -3342,9 +3616,38 @@ static inline void handle_asign(vm_t* vm, PC ins, opr_code_t instr, uint32_t off
 	register PC* code = vm->bc.code_buf;
 	var_t* v = vm_pop2(vm);
 	node_t* n = vm_pop2node(vm);
+	/* Popping takes v off the value stack, so from here on it is held only by a C
+	 * local and gc() can not see it - and every var_unref() below can start a
+	 * collection, whose gc_free_free_vars() hands v's memory back while we still
+	 * need it (node_replace() would then var_ref() freed memory). Keep the
+	 * collector out until v is back on the stack or released. See vm_step_op(). */
+	vm->gc.gc_defer++;
 	if(n == NULL) {
-		mario_debug("Error: Can not find variable: '%s'!\n", n->name);
+		mario_debug("Error: Can not find an assignable target!\n");
 		var_unref(v);
+		vm->gc.gc_defer--;
+		return;
+	}
+
+	/* ES6 accessor: the target node holds a getter/setter rather than a plain
+	 * value. do_get(for_write) pushed the object beneath the node, so pop it as
+	 * the setter's `this`. A read-only accessor silently ignores the write. */
+	if(var_is_accessor(n->var)) {
+		var_t* obj = vm_pop2(vm);
+		var_t* setter = var_accessor_setter(n->var);
+		var_unref(n->var); //release the node's stack reference
+		if(setter != NULL) {
+			var_ref(setter);   //protect the setter across the call
+			vm_push(vm, v);    //the assigned value is the setter's argument
+			func_call(vm, obj, setter, 1);
+			vm_pop(vm);        //discard the setter's return value
+			var_unref(setter);
+		}
+		if(obj != NULL)
+			var_unref(obj);    //release the object pushed by do_get(for_write)
+		vm_push(vm, v);        //an assignment expression yields the RHS value
+		var_unref(v);
+		vm->gc.gc_defer--;
 		return;
 	}
 
@@ -3357,6 +3660,7 @@ static inline void handle_asign(vm_t* vm, PC ins, opr_code_t instr, uint32_t off
 		mario_debug("Error: Can not change a const variable: '%s'!\n", n->name);
 		vm_throw(vm, "can not change a const variable: '%s'!", n->name);
 		var_unref(v);
+		vm->gc.gc_defer--;
 		return;
 	}
 
@@ -3373,6 +3677,7 @@ static inline void handle_asign(vm_t* vm, PC ins, opr_code_t instr, uint32_t off
 		vm->pc++;
 	}
 	var_unref(v);
+	vm->gc.gc_defer--;
 }
 
 static inline void handle_get(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
@@ -3382,7 +3687,21 @@ static inline void handle_get(vm_t* vm, PC ins, opr_code_t instr, uint32_t offse
 		vm_push(vm, var_new(vm));
 		return;
 	}
-	do_get(vm, v, s);
+	do_get(vm, v, s, false);
+	var_unref(v);
+}
+
+/* Member fetch used as an assignment target (`obj.prop = v`). Identical to
+ * handle_get for plain properties; for an accessor it leaves the object and the
+ * node on the stack so handle_asign can invoke the setter with the right `this`. */
+static inline void handle_getw(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
+	const char* s = bc_getstr(&vm->bc, offset);
+	var_t* v = vm_pop2(vm);
+	if(v == NULL) {
+		vm_push(vm, var_new(vm));
+		return;
+	}
+	do_get(vm, v, s, true);
 	var_unref(v);
 }
 
@@ -3445,6 +3764,53 @@ static inline void handle_call(vm_t* vm, PC ins, opr_code_t instr, uint32_t offs
 		var_unref(obj);
 }
 
+/* ES6 call-by-value: `(function(){...})()`, `(expr)(args)`, `f()()`. The
+ * callable value sits on the stack just below its arg_num arguments, exactly
+ * where INSTR_CALLO keeps its receiver. Pick it off (removing that stack slot),
+ * call it with the args above it, then release the ref the value-stack held.
+ * The operand encodes only the arity as "$n" (an empty function name). */
+static inline void handle_callx(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
+	const char* s = bc_getstr(&vm->bc, offset);
+	mstr_t* name = mstr_new("");
+	int arg_num = parse_func_name(s, name);
+	mstr_free(name);
+
+	var_t* func = vm_stack_pick(vm, arg_num + 1);
+	var_t* obj = vm_this_in_scopes(vm);
+
+	if(func != NULL && func->is_func) {
+		func_call(vm, obj, func, arg_num);
+	}
+	else {
+		while(arg_num > 0) {
+			vm_pop(vm);
+			arg_num--;
+		}
+		vm_push(vm, var_new(vm));
+		vm_throw(vm, "value is not a function!");
+	}
+
+	if(func != NULL)
+		var_unref(func); // release the ref the value-stack slot held
+}
+
+/* ES6 tagged template: after the compiler builds the cooked `strings` array and
+ * the `raw` array (both pushed above the tag callable), this pops rawArr and
+ * stringsArr, attaches stringsArr.raw = rawArr, and pushes stringsArr back so
+ * it becomes the first argument of the tag call. */
+static inline void handle_tag_raw(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
+	var_t* raw = vm_pop2(vm);
+	var_t* strings = vm_pop2(vm);
+	if(strings != NULL && raw != NULL)
+		var_add(strings, "raw", raw);
+	if(raw != NULL)
+		var_unref(raw);
+	if(strings == NULL)
+		strings = var_new(vm);
+	vm_push(vm, strings);
+	var_unref(strings);
+}
+
 static inline void handle_member(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
 	const char* s = (instr == INSTR_MEMBER ? "" : bc_getstr(&vm->bc, offset));
 	var_t* v = vm_pop2(vm);
@@ -3460,14 +3826,28 @@ static inline void handle_member(vm_t* vm, PC ins, opr_code_t instr, uint32_t of
 			func_t* func = (func_t*)v->value;
 			func->owner = var;
 		}
+		/* ES6 accessor: a getter and a setter share one property name, so merge
+		 * the second one into the existing accessor instead of overwriting it. */
+		if(instr != INSTR_MEMBER && var_is_accessor(v)) {
+			node_t* ex = var_find_own_member(var, s);
+			if(ex != NULL && var_is_accessor(ex->var)) {
+				merge_accessor(ex, v);
+				var_unref(v);
+				return;
+			}
+		}
 		var_add(var, s, v);
 	}
 	var_unref(v);
 }
 
 static inline void handle_func(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
-	var_t* v = func_def(vm,
-			(instr == INSTR_FUNC ? true : false),
+	int regular = FUNC_REGULAR;
+	if(instr == INSTR_FUNC_GET)
+		regular = FUNC_GETTER;
+	else if(instr == INSTR_FUNC_SET)
+		regular = FUNC_SETTER;
+	var_t* v = func_def(vm, regular,
 			(instr == INSTR_FUNC_STC ? true : false));
 	if(v != NULL) {
 		vm_push(vm, v);
@@ -3491,6 +3871,200 @@ static inline void handle_obj_end(vm_t* vm, PC ins, opr_code_t instr, uint32_t o
 	vm_pop_scope(vm);
 }
 
+/* ES6 array literal spread: [...src]. The array under construction is the
+ * current scope variable; append every element of the popped source. */
+static inline void handle_arr_spread(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
+	var_t* src = vm_pop2(vm);
+	var_t* arr = vm_get_scope_var(vm);
+	if(src != NULL && arr != NULL) {
+		if(src->is_array) {
+			uint32_t sz = var_array_size(src);
+			uint32_t i;
+			for(i=0; i<sz; i++) {
+				var_t* e = var_array_get_var(src, (int32_t)i);
+				if(e != NULL)
+					var_array_add(arr, e);
+			}
+		}
+		else if(src->type == V_STRING) {
+			const char* s = var_get_str(src);
+			uint32_t i;
+			for(i=0; s != NULL && s[i] != 0; i++) {
+				char buf[2] = { s[i], 0 };
+				var_array_add(arr, var_new_str(vm, buf));
+			}
+		}
+	}
+	if(src != NULL)
+		var_unref(src);
+}
+
+typedef struct {
+	var_t* target;
+} obj_spread_data;
+
+static void obj_spread_cb(const char* key, void* value, void* user_data) {
+	(void)key;
+	obj_spread_data* d = (obj_spread_data*)user_data;
+	node_t* node = (node_t*)value;
+	if(node != NULL &&
+			node->be_inherited == 0 &&
+			node->invisable == 0 &&
+			!node->be_unenumerable) {
+		var_add(d->target, node->name, node->var);
+	}
+}
+
+/* ES6 object literal spread: {...src}. Copy src's own enumerable members into
+ * the object under construction (the current scope variable). */
+static inline void handle_obj_spread(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
+	var_t* src = vm_pop2(vm);
+	var_t* target = vm_get_scope_var(vm);
+	if(src != NULL && target != NULL) {
+		obj_spread_data d;
+		d.target = target;
+		hash_map_iterate(&src->children, obj_spread_cb, &d);
+	}
+	if(src != NULL)
+		var_unref(src);
+}
+
+/* ES6 call with spread arguments: f(...arr). The runtime args array is on top
+ * of the stack. For INSTR_CALLO_SPREAD the receiver object sits just beneath. */
+static inline void handle_call_spread(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
+	const char* s = bc_getstr(&vm->bc, offset);
+	mstr_t* name = mstr_new("");
+	parse_func_name(s, name); // strip any $arity suffix, resolve by base name
+
+	var_t* args = vm_pop2(vm);
+	if(args == NULL || !args->is_array) {
+		if(args != NULL) var_unref(args);
+		args = var_new_array(vm);
+		var_ref(args);
+	}
+
+	var_t* obj = NULL;
+	var_t* func = NULL;
+	if(instr == INSTR_CALLO_SPREAD) {
+		obj = vm_stack_pick(vm, 1);
+		if(obj != NULL)
+			func = find_func(vm, obj, name->cstr);
+	}
+	else if(instr == INSTR_CALLX_SPREAD) {
+		/* call-by-value with spread: the callable sits right below the args
+		 * array on the value stack. */
+		func = vm_stack_pick(vm, 1);
+		obj = vm_this_in_scopes(vm);
+	}
+	else {
+		var_t* sc_var = vm_get_scope_var(vm);
+		obj = vm_this_in_scopes(vm);
+		func = find_func(vm, sc_var, name->cstr);
+		if(func == NULL && obj != NULL)
+			func = find_func(vm, obj, name->cstr);
+	}
+
+	if(func != NULL && !func->is_func) {
+		var_t* constr = var_find_own_member_var(func, CONSTRUCTOR);
+		if(constr == NULL) {
+			var_t* protoV = var_get_prototype(func);
+			if(protoV != NULL)
+				func = var_find_own_member_var(protoV, CONSTRUCTOR);
+			else
+				func = NULL;
+		}
+		else {
+			func = constr;
+		}
+	}
+
+	if(func != NULL) {
+		var_array_reverse(args); // call_m_func expects last arg at index 0
+		var_t* ret = call_m_func(vm, obj, func, args);
+		if(ret == NULL)
+			ret = var_new(vm);
+		vm_push(vm, ret);
+		var_unref(ret);
+	}
+	else {
+		vm_push(vm, var_new(vm));
+		vm_throw(vm, "can not find function '%s'!", name->cstr);
+	}
+
+	mstr_free(name);
+	var_unref(args);
+	if(instr == INSTR_CALLO_SPREAD && obj != NULL)
+		var_unref(obj);
+	if(instr == INSTR_CALLX_SPREAD && func != NULL)
+		var_unref(func); // release the ref the value-stack slot held
+}
+
+/* ES6 construct with spread arguments: new C(...arr). Push the array elements
+ * individually then reuse the standard construction path. */
+static inline void handle_new_spread(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
+	const char* s = bc_getstr(&vm->bc, offset);
+	mstr_t* name = mstr_new("");
+	parse_func_name(s, name);
+
+	var_t* args = vm_pop2(vm);
+	int arg_num = 0;
+	if(args != NULL && args->is_array) {
+		arg_num = var_array_size(args);
+		int i;
+		for(i = 0; i < arg_num; i++) {
+			node_t* node = var_array_get(args, i);
+			if(node == NULL || node->var == NULL)
+				vm_push(vm, var_new(vm));
+			else
+				vm_push(vm, node->var);
+		}
+	}
+
+	var_t* obj = new_obj(vm, name->cstr, arg_num);
+	if(obj == NULL) {
+		vm_push(vm, var_new(vm));
+		vm_terminate(vm);
+	}
+	else {
+		vm_push(vm, obj);
+	}
+	mstr_free(name);
+	if(args != NULL)
+		var_unref(args);
+}
+
+/* ES6 computed member in an object literal: {[key]: value}. The object under
+ * construction is the current scope variable; key then value are on the stack. */
+static inline void handle_memberv(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
+	var_t* v = vm_pop2(vm);
+	var_t* k = vm_pop2(vm);
+	if(v == NULL)
+		v = var_new(vm);
+	const char* key = "";
+	mstr_t* ks = NULL;
+	if(k != NULL) {
+		ks = mstr_new("");
+		var_to_str(k, ks);
+		key = ks->cstr;
+	}
+	var_t* var = vm_get_scope_var(vm);
+	if(var->is_array) {
+		var_array_add(var, v);
+	}
+	else {
+		if(v->is_func) {
+			func_t* func = (func_t*)v->value;
+			func->owner = var;
+		}
+		var_add(var, key, v);
+	}
+	var_unref(v);
+	if(k != NULL)
+		var_unref(k);
+	if(ks != NULL)
+		mstr_free(ks);
+}
+
 static inline void handle_array_at(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
 	var_t* v2 = vm_pop2(vm);
 	var_t* v1 = vm_pop2(vm);
@@ -3505,12 +4079,39 @@ static inline void handle_array_at(vm_t* vm, PC ins, opr_code_t instr, uint32_t 
 		const char* s = var_get_str(v2);
 		n = var_find_member_create(v1, s);
 	}
+	else if(v1->type == V_STRING) {
+		/* ES6: indexing a string yields the character at that position,
+		 * e.g. "abc"[1] == "b"; out-of-range gives undefined (as in JS).
+		 * This also makes `for...of` work over strings. */
+		int at = var_get_int(v2);
+		const char* s = var_get_str(v1);
+		int len = (s != NULL) ? (int)strlen(s) : 0;
+		if(at >= 0 && at < len) {
+			char ch[2] = { s[at], 0 };
+			vm_push(vm, var_new_str(vm, ch));
+		}
+		else {
+			vm_push(vm, var_new(vm));
+		}
+		var_unref(v1);
+		var_unref(v2);
+		return;
+	}
 	else {
 		int at = var_get_int(v2);
 		n = var_array_get(v1, at);
 	}
-	if(n != NULL)
-		vm_push_node(vm, n);
+	if(n != NULL) {
+		/* If v1 is transient (its only reference is the one released just
+		 * below), the node lives inside v1 and would dangle once v1 is freed
+		 * (e.g. `getArr()[1]`). Push the value instead (rvalue). For a
+		 * persistent v1 (named variable) keep node semantics so that
+		 * `arr[i] = x` can still write through the node. */
+		if(v1->refs <= 1)
+			vm_push(vm, n->var);
+		else
+			vm_push_node(vm, n);
+	}
 	else
 		vm_push(vm, var_new(vm));
 	var_unref(v1);
@@ -3621,6 +4222,7 @@ static void init_instr_table(void) {
 	instr_table[INSTR_CONST] = handle_const;
 	instr_table[INSTR_LOAD] = handle_load;
 	instr_table[INSTR_GET] = handle_get;
+	instr_table[INSTR_GETW] = handle_getw;
 	instr_table[INSTR_ASIGN] = handle_asign;
 
 	instr_table[INSTR_INT] = handle_int;
@@ -3637,6 +4239,8 @@ static void init_instr_table(void) {
 	instr_table[INSTR_FUNC_SET] = handle_func;
 	instr_table[INSTR_CALL] = handle_call;
 	instr_table[INSTR_CALLO] = handle_call;
+	instr_table[INSTR_CALLX] = handle_callx;
+	instr_table[INSTR_TAG_RAW] = handle_tag_raw;
 	instr_table[INSTR_CLASS] = handle_class;
 	instr_table[INSTR_CLASS_END] = handle_class_end;
 	instr_table[INSTR_MEMBER] = handle_member;
@@ -3650,6 +4254,7 @@ static void init_instr_table(void) {
 	instr_table[INSTR_PLUS] = handle_math;
 	instr_table[INSTR_MINUS] = handle_math;
 	instr_table[INSTR_NEG] = handle_neg;
+	instr_table[INSTR_POS] = handle_pos;
 	instr_table[INSTR_PPLUS] = handle_pplus;
 	instr_table[INSTR_MMINUS] = handle_mminus;
 	instr_table[INSTR_PPLUS_PRE] = handle_pplus_pre;
@@ -3702,6 +4307,16 @@ static void init_instr_table(void) {
 
 	instr_table[INSTR_OBJ] = handle_obj;
 	instr_table[INSTR_OBJ_END] = handle_obj_end;
+
+	instr_table[INSTR_ARR_SPREAD] = handle_arr_spread;
+	instr_table[INSTR_OBJ_SPREAD] = handle_obj_spread;
+	instr_table[INSTR_CALL_SPREAD] = handle_call_spread;
+	instr_table[INSTR_CALLO_SPREAD] = handle_call_spread;
+	instr_table[INSTR_CALLX_SPREAD] = handle_call_spread;
+	instr_table[INSTR_NEW_SPREAD] = handle_new_spread;
+	instr_table[INSTR_MEMBERV] = handle_memberv;
+	instr_table[INSTR_POW] = handle_math;
+	instr_table[INSTR_POWEQ] = handle_math;
 
 	instr_table[INSTR_BLOCK] = handle_block;
 	instr_table[INSTR_BLOCK_END] = handle_block_end;

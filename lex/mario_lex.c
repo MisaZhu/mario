@@ -181,15 +181,30 @@ void lex_get_basic_token(lex_t* lex) {
 		}
 		lex->tk = LEX_INT;
 
-		while (is_numeric(lex->curr_ch) || (isHex && is_hexadecimal(lex->curr_ch))) {
+		while (is_numeric(lex->curr_ch) || (isHex && is_hexadecimal(lex->curr_ch)) || lex->curr_ch=='_') {
+			// ES2021 numeric separator: '_' between digits is skipped.
+			if (lex->curr_ch=='_') {
+				if (is_numeric(lex->next_ch) || (isHex && is_hexadecimal(lex->next_ch))) {
+					lex_get_nextch(lex);
+					continue;
+				}
+				break;
+			}
 			mstr_add(lex->tk_str, lex->curr_ch);
 			lex_get_nextch(lex);
 		}
-		if (!isHex && lex->curr_ch=='.' && is_numeric(lex->next_ch)) {
+		if (!isHex && lex->curr_ch=='.' && (is_numeric(lex->next_ch) || lex->next_ch=='_')) {
 			lex->tk = LEX_FLOAT;
 			mstr_add(lex->tk_str, '.');
 			lex_get_nextch(lex);
-			while (is_numeric(lex->curr_ch)) {
+			while (is_numeric(lex->curr_ch) || lex->curr_ch=='_') {
+				if (lex->curr_ch=='_') {
+					if (is_numeric(lex->next_ch)) {
+						lex_get_nextch(lex);
+						continue;
+					}
+					break;
+				}
 				mstr_add(lex->tk_str, lex->curr_ch);
 				lex_get_nextch(lex);
 			}

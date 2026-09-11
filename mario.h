@@ -231,8 +231,24 @@ typedef struct st_bytecode {
 #define INSTR_INCLUDE      0x056 // include
 #define INSTR_STRICT       0x057 // strict 
 #define INSTR_END          0x058 //END : end of code.
+#define INSTR_ARR_SPREAD   0x059 // SPREAD_ARR : pop an array, append all elements to the array literal being built
+#define INSTR_OBJ_SPREAD   0x05A // SPREAD_OBJ : pop an object, copy its members into the object literal being built
+#define INSTR_CALL_SPREAD  0x05B // CALL_SPREAD x  : pop args array, call function x with runtime arity
+#define INSTR_CALLO_SPREAD 0x05C // CALLO_SPREAD x : pop args array, call obj.x (obj beneath array) with runtime arity
+#define INSTR_NEW_SPREAD   0x05D // NEW_SPREAD x   : pop args array, construct x with runtime arity
+#define INSTR_MEMBERV      0x05E // MEMBERV : pop value, pop key, set scope-obj[key] = value (computed key)
+#define INSTR_POW          0x05F // POW     : ** exponent
+#define INSTR_POWEQ        0x060 // POWEQ   : **= exponent-assignment
+#define INSTR_CALLX        0x061 // CALLX $n: call the function value sitting on the stack below its n args (IIFE / (expr)())
+#define INSTR_CALLX_SPREAD 0x062 // CALLX_SPREAD : pop args array, call the function value beneath it with runtime arity
+#define INSTR_TAG_RAW      0x063 // TAG_RAW : pop rawArr, pop stringsArr, set stringsArr.raw = rawArr, push stringsArr
+#define INSTR_GETW         0x064 // GETW x  : member fetch as an assignment target (invokes a setter if the property is an accessor)
+#define INSTR_YIELD        0x065 // YIELD   : pop the yielded value, suspend the generator; on resume push the value passed to next()
+#define INSTR_YIELD_STAR   0x066 // YIELD*  : pop an iterable, delegate yields to it, push its return value
+#define INSTR_FUNC_GEN     0x067 // FUNC_GEN: generator function/method definition (body follows like INSTR_FUNC)
+#define INSTR_POS          0x068 // POS     : unary + (ToNumber of the value on the stack)
 
-#define INSTR_MAX          0x059 // Maximum instruction opcode value
+#define INSTR_MAX          0x069 // Maximum instruction opcode value
 
 
 PC          bc_gen(bytecode_t* bc, opr_code_t instr);
@@ -306,6 +322,7 @@ typedef struct st_func {
 	native_func_t       native;
 	int8_t              regular: 4;
 	int8_t              is_static: 4;
+	int8_t              is_generator: 4; // ES6 `function*` / generator method
 	PC                  pc;
 	void*               data;
 	m_array_t           args; //argument names
@@ -316,6 +333,15 @@ typedef struct st_func {
 		struct st_func*    func;
 	} closure;
 } func_t;
+
+/* func_t.regular distinguishes a normal function/method from an ES6 accessor.
+ * A getter and a setter share one property name, so the primary member var is
+ * the getter when both exist (the setter hangs off it as the hidden member
+ * FUNC_SETTER_KEY); otherwise the primary is whichever one was defined. */
+#define FUNC_REGULAR   1
+#define FUNC_GETTER    2
+#define FUNC_SETTER    3
+#define FUNC_SETTER_KEY "@@setter"
 
 //script node for var member children
 typedef struct st_node {
@@ -408,6 +434,7 @@ typedef struct st_vm {
 	// GC structure
 	struct {
 		bool            is_doing_gc;
+		uint32_t        gc_defer; //>0 while the object graph is temporarily unrooted (var_clean teardown / func_call arg setup); defer opportunistic gc.
 		uint32_t        gc_trig_var_num; //trigger gc when var num reach this value.
 		uint32_t        free_var_buffer_num; // number of free var buffer.
 		var_t*          gc_vars;
