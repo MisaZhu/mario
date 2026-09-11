@@ -512,7 +512,27 @@ const char* mstr_from_bool(bool b) {
 }
 
 const char* mstr_from_float(float i) {
+	/* Match JS Number->String: NaN/Infinity render as their keyword forms and a
+	 * finite value drops the zeros "%f" pads (3.500000 -> 3.5, 2.000000 -> 2).
+	 * Keeping "%f" (not "%g") preserves plain decimal notation for the magnitudes
+	 * a 32-bit float is normally used for, so no surprising 1e+06 style output. */
+	if(isnan(i)) {
+		snprintf(_mstr_result, STATIC_mstr_MAX-1, "NaN");
+		return _mstr_result;
+	}
+	if(isinf(i)) {
+		snprintf(_mstr_result, STATIC_mstr_MAX-1, i < 0 ? "-Infinity" : "Infinity");
+		return _mstr_result;
+	}
 	snprintf(_mstr_result, STATIC_mstr_MAX-1, "%f", i);
+	char* dot = strchr(_mstr_result, '.');
+	if(dot != NULL) {
+		char* end = _mstr_result + strlen(_mstr_result) - 1;
+		while(end > dot && *end == '0')
+			*end-- = '\0';
+		if(end == dot) //all decimals were zero: drop the dangling point too
+			*end = '\0';
+	}
 	return _mstr_result;
 }
 
@@ -1591,7 +1611,7 @@ static const char* get_typeof(var_t* var) {
 		case V_OBJECT: 
 			if(var_is_symbol(var))
 				return "symbol";
-			return var->is_func ? "function": "object";
+			return (var->is_func || var->is_class) ? "function": "object";
 	}
 	return "undefined";
 }
@@ -1898,7 +1918,7 @@ void var_to_str(var_t* var, mstr_t* ret) {
 			else {
 				if(rval != NULL)
 					var_unref(rval);
-				var_to_json_str(var, ret, 0);
+				var_to_json_str(var, ret, 0, false);
 			}
 		}
 		break;
@@ -1935,7 +1955,10 @@ static void append_json_spaces(mstr_t* ret, int level) {
 }
 
 static bool _done_arr_inited = false;
-void var_to_json_str(var_t* var, mstr_t* ret, int level) {
+/* `compact` selects standard JSON.stringify formatting (no whitespace) versus the
+ * indented form used for console/debug object rendering. `level` still drives the
+ * cycle-detection reset (level==0) and, when not compact, the indentation depth. */
+void var_to_json_str(var_t* var, mstr_t* ret, int level, bool compact) {
 	mstr_reset(ret);
 
 	uint32_t i;
@@ -1972,12 +1995,12 @@ void var_to_json_str(var_t* var, mstr_t* ret, int level) {
 			node_t* n = var_array_get(var, i);
 
 			mstr_t* s = mstr_new("");
-			var_to_json_str(n->var, s, level);
+			var_to_json_str(n->var, s, level, compact);
 			mstr_append(ret, s->cstr);
 			mstr_free(s);
 
 			if (i<len-1) 
-				mstr_append(ret, ", ");
+				mstr_append(ret, compact ? "," : ", ");
 		}
 		mstr_add(ret, ']');
 	}
@@ -2002,7 +2025,10 @@ void var_to_json_str(var_t* var, mstr_t* ret, int level) {
 	}
 	else if (var->type == V_OBJECT) {
 		// children - handle with bracketed list
-		mstr_append(ret, "{\n");
+		if(compact)
+			mstr_add(ret, '{');
+		else
+			mstr_append(ret, "{\n");
 
 		// 直接遍历 hash map，不使用回调函数
 		bool first = true;
@@ -2023,23 +2049,24 @@ void var_to_json_str(var_t* var, mstr_t* ret, int level) {
 
 				// 添加逗号分隔符
 				if (!first) {
-					mstr_append(ret, ",\n");
+					mstr_append(ret, compact ? "," : ",\n");
 				} else {
 					first = false;
 				}
 
 				// 缩进
-				append_json_spaces(ret, level);
+				if(!compact)
+					append_json_spaces(ret, level);
 
 				// 添加属性名
 				mstr_add(ret, '"');
 				mstr_append(ret, key);
 				mstr_add(ret, '"');
-				mstr_append(ret, ": ");
+				mstr_append(ret, compact ? ":" : ": ");
 
 				// 序列化属性值
 				mstr_t* value_str = mstr_new("");
-				var_to_json_str(node->var, value_str, level + 1);
+				var_to_json_str(node->var, value_str, level + 1, compact);
 				mstr_append(ret, value_str->cstr);
 				mstr_free(value_str);
 
@@ -2049,11 +2076,13 @@ void var_to_json_str(var_t* var, mstr_t* ret, int level) {
 		}
 
 		// 如果没有属性，确保格式正确
-		if (first) {
-			append_json_spaces(ret, level);
-		} else {
-			mstr_add(ret, '\n');
-			append_json_spaces(ret, level - 1);
+		if (!compact) {
+			if (first) {
+				append_json_spaces(ret, level);
+			} else {
+				mstr_add(ret, '\n');
+				append_json_spaces(ret, level - 1);
+			}
 		}
 
 		mstr_add(ret, '}');
@@ -3103,6 +3132,11 @@ static inline void compare(vm_t* vm, opr_code_t op, var_t* v1, var_t* v2) {
 					break;
 			}
 		}
+		else if(v1->type == V_UNDEF) {
+			/* Same-type block: both operands are undefined, which compares equal
+			 * under both == and === (previously fell through to false). */
+			i = (op == INSTR_EQ || op == INSTR_TEQ);
+		}
 		else if(v1->type == V_INT || v1->type == V_FLOAT) {
 			switch(op) {
 				case INSTR_EQ: 
@@ -3127,6 +3161,11 @@ static inline void compare(vm_t* vm, opr_code_t op, var_t* v1, var_t* v2) {
 					break; 
 			}
 		}
+	}
+	else if((v1->type == V_UNDEF && v2->type == V_NULL) ||
+		(v1->type == V_NULL && v2->type == V_UNDEF)) {
+		/* JS: undefined == null is true (loose); undefined === null is false. */
+		i = (op == INSTR_EQ || op == INSTR_NTEQ);
 	}
 	else if(op == INSTR_NEQ || op == INSTR_NTEQ) {
 		i = true;
@@ -3467,6 +3506,12 @@ var_t* vm_new_class(vm_t* vm, const char* cls) {
 		return NULL;
 	var_t* cls_var = n->var;
 	cls_var->type = V_OBJECT;
+	/* A class/constructor is callable (`new X()`), so `typeof X` must report
+	 * "function" per spec. is_func stays 0 on purpose: new_obj() dispatches
+	 * native-class construction through the prototype's constructor member and
+	 * would treat an is_func class var as a plain function object (no func_t),
+	 * breaking `new`. is_class is read only by get_typeof(). */
+	cls_var->is_class = 1;
 	if(var_get_prototype(cls_var) == NULL) {
 		var_set_prototype(cls_var, var_new_obj_no_proto(vm, NULL, NULL));
 	}
@@ -3790,18 +3835,26 @@ static inline void handle_not(vm_t* vm, PC ins, opr_code_t instr, uint32_t offse
 static inline void handle_logic(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
 	var_t* v2 = vm_pop2(vm);
 	var_t* v1 = vm_pop2(vm);
-	bool r = false;
-	int i1 = *(int*)v1->value;
-	int i2 = *(int*)v2->value;
-
+	/* JS `&&`/`||` yield one of the OPERANDS (not a boolean) and accept any value
+	 * type. The old code did `*(int*)v->value`: a NULL deref (segfault) on
+	 * undefined/null and garbage on strings/objects, and it pushed true/false,
+	 * which broke `x = a || default`. Mirror handle_logic_assign(): use the real
+	 * ToBoolean helper var_truthy() and push the deciding operand. NOTE: logic()
+	 * in the compiler evaluates both sides unconditionally, so this is still not
+	 * short-circuit. */
+	vm->gc.gc_defer++;
+	bool b1 = var_truthy(v1);
+	var_t* res;
 	if(instr == INSTR_AAND)
-		r = (i1 != 0) && (i2 != 0);
+		res = b1 ? v2 : v1; // a && b -> a when a is falsy, else b
 	else
-		r = (i1 != 0) || (i2 != 0);
-	vm_push(vm, r ? vm->builtin_vars.var_true : vm->builtin_vars.var_false);
-
+		res = b1 ? v1 : v2; // a || b -> a when a is truthy, else b
+	if(res == NULL)
+		res = var_new(vm);
+	vm_push(vm, res);
 	var_unref(v1);
 	var_unref(v2);
+	vm->gc.gc_defer--;
 }
 
 static inline void handle_math(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {

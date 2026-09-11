@@ -545,7 +545,7 @@ node_t*     var_find_member(var_t* obj, const char* name);
 var_t*      var_find_member_var(var_t* obj, const char* name);
 var_t*      var_find_own_member_var(var_t* obj, const char* name);
 
-void        var_to_json_str(var_t*, mstr_t*, int);
+void        var_to_json_str(var_t*, mstr_t*, int, bool);
 void        var_to_str(var_t*, mstr_t*);
 
 bool        var_is_symbol(var_t* var);
