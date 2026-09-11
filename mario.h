@@ -403,6 +403,21 @@ extern const char* _mario_lang;
 #define TA_SLOT          "@@taslot"  // synthetic write-target node name (see INSTR_ARRAY_AT_W)
 #define TA_SLOT_TA       "@@ta"      // hidden member on the @@taslot node's var: the ref'd TypedArray
 
+/* Proxy exotic object (Phase 5): an ordinary V_OBJECT with @@exotic="proxy" plus
+ * three hidden invisable members - @@ptarget (the target, ref'd), @@phandler (the
+ * handler, ref'd) and @@prevoked (V_BOOL). The property-access intercept routes
+ * get/set/has/deleteProperty/ownKeys/apply/construct through the handler's traps
+ * (the proxy_* helpers in mario.c); a revoked proxy throws TypeError on every
+ * operation. Extensibility is modelled by an @@noext marker (V_BOOL true) laid on
+ * the target by preventExtensions - absent means extensible. */
+#define PROXY_TARGET     "@@ptarget"   // hidden own member: the target object
+#define PROXY_HANDLER    "@@phandler"  // hidden own member: the handler object
+#define PROXY_REVOKED    "@@prevoked"  // hidden own member: V_BOOL, set by revoke()
+#define PROXY_SLOT       "@@proxyslot" // synthetic write-target node name (proxy `set` intercept)
+#define PROXY_SLOT_OBJ   "@@pobj"      // hidden member on the @@proxyslot node's var: the ref'd proxy
+#define PROXY_SLOT_KEY   "@@pkey"      // hidden member on the @@proxyslot node's var: the key var
+#define OBJ_NO_EXT       "@@noext"     // hidden own member (V_BOOL true): preventExtensions applied
+
 struct st_vm;
 
 typedef struct st_var {
@@ -674,6 +689,53 @@ bool        var_typedarray_set_at(vm_t* vm, var_t* ta, int64_t idx, var_t* val);
  * Reflect.deleteProperty / Reflect.has in Phase 5). */
 bool        var_delete_own_member(var_t* obj, const char* name);
 bool        var_has_member(var_t* obj, const char* name); // own + prototype chain
+
+/* Proxy trap plumbing (Phase 5), implemented in mario.c next to the exotic
+ * predicates so the property-access intercept does not depend on the lang native.
+ * var_is_callable is true for a function OR a proxy whose target is callable (so
+ * the call/new paths can route an apply/construct trap). The proxy_* entry points
+ * invoke the matching handler trap and fall back to the default operation on the
+ * target when the trap is absent; get/own_keys/apply/construct return an OWNED var
+ * (the caller pushes-then-unrefs it, or normalises it for a native return), the
+ * rest return a bool result. mario_*_var are the proxy-aware read/write/presence/
+ * delete/ownKeys primitives shared by the VM intercept and Reflect.* - for a
+ * non-proxy receiver they are exactly the ordinary member operations. */
+bool        var_is_callable(var_t* v);
+var_t*      var_proxy_target(var_t* p);
+var_t*      var_proxy_handler(var_t* p);
+bool        var_proxy_is_revoked(var_t* p);
+var_t*      mario_get_var(vm_t* vm, var_t* obj, var_t* key, var_t* receiver);      // owned
+bool        mario_set_var(vm_t* vm, var_t* obj, var_t* key, var_t* value, var_t* receiver);
+bool        mario_has_var(vm_t* vm, var_t* obj, var_t* key);
+bool        mario_delete_var(vm_t* vm, var_t* obj, var_t* key);
+var_t*      mario_own_keys_var(vm_t* vm, var_t* obj, bool strings_only, bool enum_only); // owned array
+var_t*      proxy_get(vm_t* vm, var_t* p, var_t* key, var_t* receiver);            // owned
+bool        proxy_set(vm_t* vm, var_t* p, var_t* key, var_t* value, var_t* receiver);
+bool        proxy_has(vm_t* vm, var_t* p, var_t* key);
+bool        proxy_delete(vm_t* vm, var_t* p, var_t* key);
+var_t*      proxy_own_keys(vm_t* vm, var_t* p, bool strings_only, bool enum_only); // owned array
+var_t*      proxy_apply(vm_t* vm, var_t* p, var_t* thisArg, var_t* args);          // owned
+var_t*      proxy_construct(vm_t* vm, var_t* p, var_t* args, var_t* newTarget);    // owned
+var_t*      proxy_get_prototype(vm_t* vm, var_t* p);                               // owned or NULL
+bool        proxy_set_prototype(vm_t* vm, var_t* p, var_t* proto);
+bool        proxy_is_extensible(vm_t* vm, var_t* p);
+bool        proxy_prevent_extensions(vm_t* vm, var_t* p);
+bool        proxy_define_property(vm_t* vm, var_t* p, var_t* key, var_t* desc);
+var_t*      proxy_get_own_descriptor(vm_t* vm, var_t* p, var_t* key);             // owned or NULL
+
+/* Proxy-aware primitives for the remaining internal methods (Reflect.* and the
+ * Object.* statics): a proxy routes its trap, any other object the default op on
+ * itself. var-returning ops yield a baseline (refs==0) value or a borrowed
+ * persistent prototype (getPrototypeOf); bool ops yield the operation result. */
+var_t*      mario_get_prototype_var(vm_t* vm, var_t* obj);        // owned or borrowed or NULL
+bool        mario_set_prototype_var(vm_t* vm, var_t* obj, var_t* proto);
+bool        mario_is_extensible_var(vm_t* vm, var_t* obj);
+bool        mario_prevent_extensions_var(vm_t* vm, var_t* obj);
+bool        mario_define_property_var(vm_t* vm, var_t* obj, var_t* key, var_t* desc);
+var_t*      mario_gopd_var(vm_t* vm, var_t* obj, var_t* key);     // owned or undefined
+var_t*      mario_apply_var(vm_t* vm, var_t* func, var_t* thisArg, var_t* argsNatural);   // owned
+var_t*      mario_construct_var(vm_t* vm, var_t* ctor, var_t* argsNatural, var_t* newTarget); // owned
+
 var_t*      vm_get_iterator(vm_t* vm, var_t* iterable);
 var_t*      vm_new_array_iterator(vm_t* vm, var_t* arr);
 var_t*      vm_new_string_iterator(vm_t* vm, var_t* str);

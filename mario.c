@@ -3907,6 +3907,34 @@ static var_t* find_func(vm_t* vm, var_t* obj, const char* fname) {
 static var_t* gen_create(vm_t* vm, var_t* func_var, var_t* env);
 
 static bool func_call(vm_t* vm, var_t* obj, var_t* func_var, int arg_num) {
+	/* Proxy apply/construct: a callable proxy has no func_t, so route it before the
+	 * ordinary path builds an env. Collect the arg_num args the caller already pushed
+	 * (stack order -> natural), then drive the apply trap - or the construct trap when
+	 * vm->new_target marks a `new p(...)`. The trap functions themselves are ordinary
+	 * is_func values, so this never recurses. */
+	if(var_is_proxy(func_var)) {
+		vm->gc.gc_defer++;
+		var_t* pargs = var_new_array(vm);
+		for(int i = 0; i < arg_num; i++) {
+			var_t* a = vm_pop2(vm);
+			var_array_add(pargs, (a != NULL) ? a : var_new(vm));
+			if(a != NULL) var_unref(a);
+		}
+		var_array_reverse(pargs);
+		var_t* res;
+		if(vm->new_target != NULL) {
+			var_t* nt = vm->new_target;
+			vm->new_target = NULL;
+			res = proxy_construct(vm, func_var, pargs, nt);
+		}
+		else {
+			res = proxy_apply(vm, func_var, obj, pargs);
+		}
+		var_unref(pargs);
+		vm_push(vm, (res != NULL) ? res : var_new(vm));
+		vm->gc.gc_defer--;
+		return true;
+	}
 	var_t *env = var_new_obj_no_proto(vm, NULL, NULL);
 	var_t* args = var_new_array(vm);
 	var_add(env, "arguments", args);
@@ -4100,6 +4128,66 @@ static bool ta_slot_write(vm_t* vm, node_t* n, var_t* val) {
 	return true;
 }
 
+/* ---- Proxy write sentinel (Phase 5) ----
+ * `proxy.name = v` / `proxy[k] = v` compile to the same GETW / ARRAY_AT_W target
+ * fetch as a plain assignment, so the write path routes a proxy through a synthetic
+ * @@proxyslot node exactly like a TypedArray's @@taslot. The node's ->var is a lazy
+ * undefined placeholder carrying hidden @@pobj (the proxy) and @@pkey (the key);
+ * proxy_slot_write() detects the sentinel and drives the set trap.
+ *
+ * The current value is resolved LAZILY: a simple `p.x = v` never reads it (so only
+ * the set trap fires, per spec), while a compound `p.x += v` / `p.x++` resolves it
+ * through the get trap in handle_math / vm_step_op before computing. Both of those
+ * discard the placeholder and substitute the get-trap result as the left operand. */
+static inline bool is_proxy_slot(node_t* n) {
+	return n != NULL && n->name != NULL && n->name[0] == '@' && strcmp(n->name, PROXY_SLOT) == 0;
+}
+
+static inline var_t* proxy_slot_obj(node_t* n) { return var_find_own_member_var(n->var, PROXY_SLOT_OBJ); }
+static inline var_t* proxy_slot_key(node_t* n) { return var_find_own_member_var(n->var, PROXY_SLOT_KEY); }
+
+/* Push a @@proxyslot write-target for `p[key] = ..`. Adopts one reference each on
+ * `p` and `key` (via the hidden members); the caller releases its own references
+ * (the popped stack refs), leaving the sentinel as the sole holder until it is
+ * consumed by proxy_slot_write / node_free. */
+static void proxy_push_slot(vm_t* vm, var_t* p, var_t* key) {
+	var_t* cur = var_new(vm);   /* lazy placeholder; see is_proxy_slot comment */
+	vm->gc.gc_defer++;          /* sn/cur are unrooted until vm_push_node below */
+	var_ref(cur);               /* node's own reference */
+	node_t* sn = (node_t*)mario_malloc(sizeof(node_t));
+	memset(sn, 0, sizeof(node_t));
+	sn->magic = 1;
+	sn->name = (char*)mario_malloc(strlen(PROXY_SLOT)+1);
+	memcpy(sn->name, PROXY_SLOT, strlen(PROXY_SLOT)+1);
+	sn->var = cur;
+	node_t* on = var_add(cur, PROXY_SLOT_OBJ, p);      /* var_add refs p */
+	on->invisable = 1; on->be_unenumerable = 1;
+	node_t* kn = var_add(cur, PROXY_SLOT_KEY, key);    /* var_add refs key */
+	kn->invisable = 1; kn->be_unenumerable = 1;
+	vm_push_node(vm, sn);                              /* adds the stack reference to cur */
+	vm->gc.gc_defer--;
+}
+
+/* If `n` is a @@proxyslot write-target, drive the proxy set trap with `val` and
+ * return true (the caller frees the sentinel with node_free instead of
+ * node_replace). The hidden @@pobj/@@pkey back-refs are removed afterwards so a
+ * shared current value is never left polluted (or leaking a proxy reference). */
+static bool proxy_slot_write(vm_t* vm, node_t* n, var_t* val) {
+	if(!is_proxy_slot(n))
+		return false;
+	var_t* p = proxy_slot_obj(n);
+	var_t* k = proxy_slot_key(n);
+	if(p != NULL && k != NULL) {
+		if(val != NULL) var_ref(val);   /* protect val across the trap call */
+		proxy_set(vm, p, k, val, p);
+		if(val != NULL) var_unref(val);
+	}
+	var_delete_own_member(n->var, PROXY_SLOT_OBJ);
+	var_delete_own_member(n->var, PROXY_SLOT_KEY);
+	return true;
+}
+
+
 /* Publish an arithmetic result. For a compound assignment (`x += y`) the freshly
  * built result var is installed through the lvalue's node instead of being
  * written into v1 in place: one var_t is shared by every alias of a binding
@@ -4109,8 +4197,9 @@ static inline void math_result(vm_t* vm, opr_code_t op, node_t* n, var_t* res) {
 	if(n != NULL && is_compound_assign(op)) {
 		/* A synthetic @@taslot target (INSTR_ARRAY_AT_W): encode the result into
 		 * the TypedArray's buffer and free the sentinel instead of node_replace
-		 * (which would only rebind the throw-away node->var). */
-		if(ta_slot_write(vm, n, res))
+		 * (which would only rebind the throw-away node->var). A @@proxyslot target
+		 * drives the proxy set trap and is freed the same way. */
+		if(ta_slot_write(vm, n, res) || proxy_slot_write(vm, n, res))
 			node_free(n);
 		else
 			node_replace(n, res); //the node takes its own reference to res.
@@ -4644,6 +4733,22 @@ static int mstr_utf16_length(const char* s) {
  * node so handle_asign can invoke the setter; a read invokes the getter and
  * pushes its result. */
 void do_get(vm_t* vm, var_t* v, const char* name, bool for_write) {
+	/* Proxy intercept: `p.name` routes the get trap (read) or pushes a @@proxyslot
+	 * write-target (assignment). One hash miss for every non-proxy, so the plain
+	 * path below is untouched. */
+	if(var_is_proxy(v)) {
+		var_t* keyv = var_new_str(vm, name);
+		if(for_write) {
+			proxy_push_slot(vm, v, keyv);   // sentinel adopts keyv (refs 0 -> 1)
+		}
+		else {
+			var_ref(keyv);                  // own it for proxy_get's borrow contract
+			var_t* res = proxy_get(vm, v, keyv, v);
+			vm_push(vm, (res != NULL) ? res : var_new(vm));
+			var_unref(keyv);
+		}
+		return;
+	}
 	if(v->type == V_STRING && strcmp(name, "length") == 0) {
 		int len = mstr_utf16_length(var_get_str(v));
 		vm_push(vm, var_new_int(vm, len));
@@ -4717,6 +4822,26 @@ var_t* new_obj(vm_t* vm, const char* name, int arg_num) {
 		mario_debug("Error: There is no class: '%s'!\n", name);
 		vm_throw(vm, "there is no class: '%s'!", name);
 		return NULL;
+	}
+
+	/* Proxy construct: `new p(...)` on a callable proxy routes the [[Construct]]
+	 * trap rather than the ordinary prototype/constructor bookkeeping below. The
+	 * compiler already pushed arg_num args (natural order, argN on top); collect
+	 * them into an array and hand off to proxy_construct, which returns at baseline
+	 * refs just like the ordinary path. */
+	if(var_is_proxy(n->var)) {
+		vm->gc.gc_defer++;
+		var_t* pargs = var_new_array(vm);
+		for(int i = 0; i < arg_num; i++) {
+			var_t* a = vm_pop2(vm);
+			var_array_add(pargs, (a != NULL) ? a : var_new(vm));
+			if(a != NULL) var_unref(a);
+		}
+		var_array_reverse(pargs);
+		obj = proxy_construct(vm, n->var, pargs, n->var);
+		var_unref(pargs);
+		vm->gc.gc_defer--;
+		return obj;
 	}
 
 	var_t* protoV = var_get_prototype(n->var);
@@ -5272,6 +5397,51 @@ static inline void handle_math(vm_t* vm, PC ins, opr_code_t instr, uint32_t offs
 	 * and math_result()'s node_replace() drops the lvalue's old var, which can
 	 * start a collection that sweeps them. See vm_step_op(). */
 	vm->gc.gc_defer++;
+	/* Accessor compound assign (`obj.x += v`): the compiler retargeted the member
+	 * fetch to GETW, so do_get(for_write) pushed [obj, accessor_node] and v1 is the
+	 * accessor var itself, not a value. Read the current value through the getter,
+	 * compute, then write through the setter (a read-only accessor drops the write,
+	 * exactly as handle_asign does). The result stays on the stack as the
+	 * expression's value. */
+	if(n != NULL && var_is_accessor(n->var)) {
+		var_unref(v1);                        // release the popped ref on the accessor var
+		var_t* obj = vm_pop2(vm);             // the object GETW pushed beneath the node
+		var_t* getter = var_accessor_getter(n->var);
+		var_t* cur = NULL;
+		if(getter != NULL) {
+			var_ref(getter);
+			func_call(vm, obj, getter, 0);    // pushes the getter's return value
+			cur = vm_pop2(vm);
+			var_unref(getter);
+		}
+		if(cur == NULL) cur = var_new(vm);
+		math_op(vm, instr, cur, v2, NULL);    // compute with no node write-back; pushes res
+		var_t* res = vm_peek_var(vm);         // borrow the result for the setter argument
+		var_t* setter = var_accessor_setter(n->var);
+		if(setter != NULL && res != NULL) {
+			var_ref(setter); var_ref(res);
+			vm_push(vm, res);                 // the setter's argument
+			func_call(vm, obj, setter, 1);
+			vm_pop(vm);                       // discard the setter's return value
+			var_unref(setter); var_unref(res);
+		}
+		if(obj != NULL) var_unref(obj);
+		var_unref(cur);
+		var_unref(v2);
+		vm->gc.gc_defer--;
+		return;
+	}
+	/* Proxy compound assignment (`p.x += v`): the @@proxyslot placeholder is not the
+	 * real current value - resolve it through the get trap now (spec order: get, then
+	 * set) and use it as the left operand. A simple `p.x = v` never reaches here, so
+	 * it still fires the set trap alone. */
+	if(is_compound_assign(instr) && is_proxy_slot(n)) {
+		var_unref(v1);                        // discard the placeholder's stack ref
+		var_t* p = proxy_slot_obj(n);
+		var_t* k = proxy_slot_key(n);
+		v1 = proxy_get(vm, p, k, p);          // refs == baseline
+		var_ref(v1);                          // balance the trailing var_unref(v1)
+	}
 	math_op(vm, instr, v1, v2, n);
 	var_unref(v1);
 	var_unref(v2);
@@ -5310,6 +5480,68 @@ static inline void vm_step_op(vm_t* vm, PC ins, node_t* n, var_t* v, int step, b
 	 * var_unref() below can start a collection, so keep the collector out until
 	 * the result is back on the stack (the guard func_call() uses for env/args). */
 	vm->gc.gc_defer++;
+	/* Accessor `obj.x++` / `++obj.x`: the compiler retargeted the member fetch to
+	 * GETW, so do_get(for_write) pushed [obj, accessor_node] and v is the accessor
+	 * var, not a number. Read the current value through the getter, step it and
+	 * write it back through the setter; a non-numeric getter result is left
+	 * unchanged with no write, mirroring handle_step()'s plain path. */
+	if(n != NULL && var_is_accessor(n->var)) {
+		var_unref(v);                          // release the popped ref on the accessor var
+		var_t* obj = vm_pop2(vm);              // the object GETW pushed beneath the node
+		var_t* getter = var_accessor_getter(n->var);
+		var_t* cur = NULL;
+		if(getter != NULL) {
+			var_ref(getter);
+			func_call(vm, obj, getter, 0);     // pushes the getter's return value
+			cur = vm_pop2(vm);
+			var_unref(getter);
+		}
+		if(cur == NULL) cur = var_new(vm);
+		bool steppable = (cur->type == V_INT || cur->type == V_FLOAT ||
+		                  cur->type == V_INT64 || cur->type == V_FLOAT64 ||
+		                  cur->type == V_BIGINT);
+		var_t* nv = steppable ? var_step(vm, cur, step) : cur; // distinct var only when steppable
+		if(steppable) var_ref(nv);
+		var_t* res = prefix ? nv : cur;
+		var_ref(res);
+		if(steppable) {
+			var_t* setter = var_accessor_setter(n->var);
+			if(setter != NULL) {
+				var_ref(setter);
+				vm_push(vm, nv);               // the setter's argument
+				func_call(vm, obj, setter, 1);
+				vm_pop(vm);                    // discard the setter's return value
+				var_unref(setter);
+			}
+		}
+		if((ins & INSTR_OPT_CACHE) == 0) {
+			if(OP(code[vm->pc]) != INSTR_POP)
+				vm_push(vm, res);
+			else {
+				code[vm->pc] = INSTR_NIL;
+				code[vm->pc-1] |= INSTR_OPT_CACHE;
+			}
+		}
+		else {
+			vm->pc++;
+		}
+		var_unref(res);
+		if(steppable) var_unref(nv);
+		var_unref(cur);
+		if(obj != NULL) var_unref(obj);
+		vm->gc.gc_defer--;
+		return;
+	}
+	/* Proxy `p.x++` / `++p.x`: the @@proxyslot placeholder is not the real current
+	 * value - resolve it through the get trap before stepping (spec order: get, then
+	 * set). The trailing var_unref(v) balances the reference taken here. */
+	if(n != NULL && is_proxy_slot(n)) {
+		var_unref(v);                          // discard the placeholder's stack ref
+		var_t* p = proxy_slot_obj(n);
+		var_t* k = proxy_slot_key(n);
+		v = proxy_get(vm, p, k, p);            // refs == baseline
+		var_ref(v);                            // our own ref, dropped by var_unref(v) below
+	}
 	var_t* nv = var_step(vm, v, step);
 	var_ref(nv); //our own reference to nv, dropped at the end (as handle_asign() does).
 	var_t* res = prefix ? nv : v;
@@ -5317,8 +5549,9 @@ static inline void vm_step_op(vm_t* vm, PC ins, node_t* n, var_t* v, int step, b
 	if(n != NULL) {
 		/* A synthetic @@taslot (`ta[i]++`): write the stepped value into the
 		 * buffer and free the sentinel; node_free releases the node's own ref on
-		 * the decoded element exactly as node_replace's var_unref(old) would. */
-		if(ta_slot_write(vm, n, nv))
+		 * the decoded element exactly as node_replace's var_unref(old) would. A
+		 * @@proxyslot (`p.x++`) drives the proxy set trap and is freed the same way. */
+		if(ta_slot_write(vm, n, nv) || proxy_slot_write(vm, n, nv))
 			node_free(n);
 		else
 			node_replace(n, nv); //write the new value back through the binding.
@@ -5346,6 +5579,16 @@ static inline void vm_step_op(vm_t* vm, PC ins, node_t* n, var_t* v, int step, b
  * as before. Note the old code tested `v->value != NULL`, which treated a string
  * buffer as an int array and incremented its first four bytes. */
 static inline void handle_step(vm_t* vm, PC ins, node_t* n, var_t* v, int step, bool prefix) {
+	/* An accessor target (`obj.x++`) reaches here as its accessor var, and a proxy
+	 * `@@proxyslot` sentinel (`p.x++`) as its lazy undefined placeholder - neither
+	 * is a number, so the plain guard below would drop the write. Route both to
+	 * vm_step_op, which resolves the getter/setter or the get/set traps. (A
+	 * TypedArray's @@taslot already carries the decoded element, so it is numeric
+	 * and falls through to the normal path.) See vm_step_op()'s branches. */
+	if(n != NULL && (var_is_accessor(n->var) || is_proxy_slot(n))) {
+		vm_step_op(vm, ins, n, v, step, prefix);
+		return;
+	}
 	if(v->type == V_INT || v->type == V_FLOAT ||
 	   v->type == V_INT64 || v->type == V_FLOAT64) {
 		vm_step_op(vm, ins, n, v, step, prefix);
@@ -5582,7 +5825,7 @@ static inline void handle_asign(vm_t* vm, PC ins, opr_code_t instr, uint32_t off
 	 * value. vm_pop2node left the decoded element holding its stack reference, so
 	 * release it here (mirroring the var_unref(n->var) on the normal path);
 	 * node_free then releases the node's own reference and frees the sentinel. */
-	if(ta_slot_write(vm, n, v)) {
+	if(ta_slot_write(vm, n, v) || proxy_slot_write(vm, n, v)) {
 		var_unref(n->var);
 		node_free(n);
 		if((ins & INSTR_OPT_CACHE) == 0) {
@@ -5776,7 +6019,7 @@ static inline void handle_call(vm_t* vm, PC ins, opr_code_t instr, uint32_t offs
 	if(func == NULL && obj != NULL)
 		func = find_func(vm, obj, name->cstr);
 
-	if(func != NULL && !func->is_func) {
+	if(func != NULL && !func->is_func && !var_is_proxy(func)) {
 		var_t* constr = var_find_own_member_var(func, CONSTRUCTOR);
 		if(constr == NULL) {
 			var_t* protoV = var_get_prototype(func);
@@ -5824,7 +6067,7 @@ static inline void handle_callx(vm_t* vm, PC ins, opr_code_t instr, uint32_t off
 	var_t* func = vm_stack_pick(vm, arg_num + 1);
 	var_t* obj = vm_this_in_scopes(vm);
 
-	if(func != NULL && func->is_func) {
+	if(func != NULL && (func->is_func || var_is_callable(func))) {
 		func_call(vm, obj, func, arg_num);
 	}
 	else {
@@ -5856,7 +6099,7 @@ static inline void handle_callxo(vm_t* vm, PC ins, opr_code_t instr, uint32_t of
 	var_t* func = vm_stack_pick(vm, arg_num + 1); /* removes the func slot */
 	var_t* obj  = vm_stack_pick(vm, arg_num + 1); /* receiver now at that depth */
 
-	if(func != NULL && func->is_func) {
+	if(func != NULL && (func->is_func || var_is_callable(func))) {
 		func_call(vm, obj, func, arg_num);
 	}
 	else {
@@ -6656,7 +6899,7 @@ static inline void handle_call_spread(vm_t* vm, PC ins, opr_code_t instr, uint32
 			func = find_func(vm, obj, name->cstr);
 	}
 
-	if(func != NULL && !func->is_func) {
+	if(func != NULL && !func->is_func && !var_is_proxy(func)) {
 		var_t* constr = var_find_own_member_var(func, CONSTRUCTOR);
 		if(constr == NULL) {
 			var_t* protoV = var_get_prototype(func);
@@ -6800,6 +7043,16 @@ static int64_t ta_key_index(var_t* v2) {
  * element/member value or, for a persistent receiver, the binding node so a
  * following assignment can write through it. */
 static void array_at_push(vm_t* vm, var_t* v1, var_t* v2) {
+	/* Proxy indexed read: `p[key]` routes the get trap with the key var (string,
+	 * symbol or number). v1/v2 arrive holding the caller's popped stack refs, which
+	 * this branch releases exactly like the plain path below. */
+	if(var_is_proxy(v1)) {
+		var_t* res = proxy_get(vm, v1, v2, v1);   // v2 is borrowed (refs>=1)
+		vm_push(vm, (res != NULL) ? res : var_new(vm));
+		var_unref(v1);
+		var_unref(v2);
+		return;
+	}
 	/* TypedArray indexed read: `ta[i]` (or canonical `ta["i"]`) decodes element i
 	 * straight from the shared buffer. The cheap `!is_array && var_is_typedarray`
 	 * guard is one hash miss for every plain object/array, so the hot path is a
@@ -6889,6 +7142,16 @@ static inline void handle_array_at_w(vm_t* vm, PC ins, opr_code_t instr, uint32_
 		vm_push(vm, var_new(vm));
 		if(v1 != NULL) var_unref(v1);
 		if(v2 != NULL) var_unref(v2);
+		return;
+	}
+	/* Proxy subscript write: `p[key] = v` / `p[key] += v` / `p[key]++` push a
+	 * @@proxyslot sentinel carrying the proxy + key; handle_asign / math_result /
+	 * vm_step_op detect it and drive the set trap. The sentinel adopts one ref each
+	 * on v1/v2, so release the popped stack refs here (mirrors the TA branch). */
+	if(var_is_proxy(v1)) {
+		proxy_push_slot(vm, v1, v2);
+		var_unref(v1);
+		var_unref(v2);
 		return;
 	}
 	if(!v1->is_array && var_is_typedarray(v1) && !var_is_symbol(v2)) {
@@ -7019,7 +7282,16 @@ static inline void handle_delete(vm_t* vm, PC ins, opr_code_t instr, uint32_t of
 	const char* s = bc_getstr(&vm->bc, offset);
 	var_t* obj = vm_pop2(vm);
 	vm->gc.gc_defer++; //obj is a bare C pointer across the member teardown (see handle_instof)
-	bool res = var_delete_own_member(obj, s);
+	bool res;
+	if(var_is_proxy(obj)) {
+		var_t* keyv = var_new_str(vm, s);
+		var_ref(keyv);                       // own it across proxy_delete's borrow
+		res = proxy_delete(vm, obj, keyv);   // `delete p.x`: deleteProperty trap
+		var_unref(keyv);
+	}
+	else {
+		res = var_delete_own_member(obj, s);
+	}
 	if(obj != NULL) var_unref(obj);
 	vm_push(vm, var_new_bool(vm, res));
 	vm->gc.gc_defer--;
@@ -7033,7 +7305,10 @@ static inline void handle_delete_at(vm_t* vm, PC ins, opr_code_t instr, uint32_t
 	vm->gc.gc_defer++;
 	bool res = true;
 	if(obj != NULL && key != NULL) {
-		if(var_is_symbol(key)) {
+		if(var_is_proxy(obj)) {
+			res = proxy_delete(vm, obj, key);   // `delete p[k]`: deleteProperty trap (key borrowed)
+		}
+		else if(var_is_symbol(key)) {
 			res = var_delete_own_member(obj, var_symbol_key(key));
 		}
 		else if(key->type == V_STRING) {
@@ -7086,7 +7361,10 @@ static inline void handle_in(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset
 	vm->gc.gc_defer++;
 	bool res = false;
 	if(obj != NULL && key != NULL) {
-		if(var_is_symbol(key)) {
+		if(var_is_proxy(obj)) {
+			res = proxy_has(vm, obj, key);   // `key in p`: has trap (key borrowed, refs>=1)
+		}
+		else if(var_is_symbol(key)) {
 			const char* sk = var_symbol_key(key);
 			if(sk != NULL) res = var_has_member(obj, sk);
 		}
@@ -7103,6 +7381,623 @@ static inline void handle_in(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset
 	if(obj != NULL) var_unref(obj);
 	vm_push(vm, var_new_bool(vm, res));
 	vm->gc.gc_defer--;
+}
+
+/* ===================== Proxy internals (Phase 5) =====================
+ * A proxy is an ordinary V_OBJECT marked @@exotic="proxy" with hidden @@ptarget /
+ * @@phandler / @@prevoked members (installed by native_Proxy.c). Every property
+ * path in the VM - do_get, array_at_push, the @@proxyslot write sentinel,
+ * handle_in, handle_delete/_at, func_call and new_obj - checks var_is_proxy() and
+ * routes here; for a plain object each check is a single hash miss, so the
+ * intercept is a genuine no-op.
+ *
+ * Each proxy_<op> invokes handler.<trap>(target, ...) when that trap is a function
+ * and otherwise performs the DEFAULT operation on the target (forwarding through
+ * mario_<op>_var, so a proxy-over-a-proxy chains correctly). A revoked proxy throws
+ * a TypeError from every entry point. Trap results are returned with call_m_func's
+ * extra reference released (refs == baseline), exactly like a native return value or
+ * new_obj: the caller roots it (vm_push) or hands it to func_call. Invariants this
+ * VM cannot model (it does not track configurability/writability) are not enforced;
+ * the callable-target, object-or-null-prototype and preventExtensions invariants
+ * are. proxy_call_trap borrows its argv (each element must carry refs>=1). */
+
+/* Normalise a property-key var (string / symbol / number / bool) to a C string.
+ * Numeric and boolean keys render into `numbuf` (which the caller keeps alive);
+ * string and symbol keys return their own storage. */
+static const char* proxy_key_cstr(var_t* key, char* numbuf, uint32_t sz) {
+	if(key == NULL)
+		return "";
+	if(key->type == V_STRING)
+		return var_get_str(key);
+	if(var_is_symbol(key)) {
+		const char* s = var_symbol_key(key);
+		return (s != NULL) ? s : "";
+	}
+	if(numbuf == NULL || sz == 0)
+		return "";
+	switch(key->type) {
+		case V_INT:   snprintf(numbuf, sz, "%d", key->value ? *(int*)key->value : 0); break;
+		case V_INT64: snprintf(numbuf, sz, "%lld", key->value ? (long long)*(int64_t*)key->value : 0LL); break;
+		case V_BOOL:  snprintf(numbuf, sz, "%s", var_get_bool(key) ? "true" : "false"); break;
+		case V_NULL:  snprintf(numbuf, sz, "null"); break;
+		case V_UNDEF: numbuf[0] = 0; break;
+		default:      snprintf(numbuf, sz, "%d", var_get_int(key)); break;
+	}
+	return numbuf;
+}
+
+var_t* var_proxy_target(var_t* p)  { return var_find_own_member_var(p, PROXY_TARGET); }
+var_t* var_proxy_handler(var_t* p) { return var_find_own_member_var(p, PROXY_HANDLER); }
+
+bool var_proxy_is_revoked(var_t* p) {
+	var_t* r = var_find_own_member_var(p, PROXY_REVOKED);
+	return (r != NULL) ? var_get_bool(r) : false;
+}
+
+/* Callable = a function, or a (non-revoked) proxy whose target is callable, so the
+ * call/new paths route an apply/construct trap instead of "not a function". */
+bool var_is_callable(var_t* v) {
+	if(v == NULL)
+		return false;
+	if(v->is_func)
+		return true;
+	if(var_is_proxy(v) && !var_proxy_is_revoked(v))
+		return var_is_callable(var_proxy_target(v));
+	return false;
+}
+
+static bool proxy_throw_revoked(vm_t* vm) {
+	vm_throw_type_native(vm, "TypeError", "Cannot perform operation on a revoked proxy");
+	return true;
+}
+
+/* handler.<trap> when it is a function, else NULL (caller uses the default op). */
+static var_t* proxy_trap_func(var_t* p, const char* trap) {
+	var_t* h = var_proxy_handler(p);
+	if(h == NULL)
+		return NULL;
+	var_t* fn = var_find_member_var(h, trap);
+	return (fn != NULL && fn->is_func) ? fn : NULL;
+}
+
+/* Invoke a trap: fn(target, argv[0..argc-1]) with this=handler. argv elements are
+ * BORROWED and must carry refs>=1 (the args array adopts one ref per element and
+ * releases it, so refcounts are unchanged and the elements survive). Returns an
+ * OWNED result (refs>=1) or NULL. */
+static var_t* proxy_call_trap(vm_t* vm, var_t* p, var_t* fn, var_t** argv, int argc) {
+	var_t* target = var_proxy_target(p);
+	var_t* handler = var_proxy_handler(p);
+	var_t* args = var_new_array(vm);
+	var_array_add(args, (target != NULL) ? target : var_new(vm));
+	for(int i = 0; i < argc; i++)
+		var_array_add(args, (argv[i] != NULL) ? argv[i] : var_new(vm));
+	var_array_reverse(args);
+	var_t* res = call_m_func(vm, handler, fn, args);
+	var_unref(args);
+	return res;
+}
+
+/* Call `func` with this=thisArg and the natural-order args array. OWNED result. */
+static var_t* call_with_args(vm_t* vm, var_t* thisArg, var_t* func, var_t* argsNatural) {
+	var_t* args = var_new_array(vm);
+	int n = (argsNatural != NULL) ? (int)var_array_size(argsNatural) : 0;
+	for(int i = 0; i < n; i++) {
+		node_t* nd = var_array_get(argsNatural, i);
+		var_array_add(args, (nd != NULL && nd->var != NULL) ? nd->var : var_new(vm));
+	}
+	var_array_reverse(args);
+	var_t* res = call_m_func(vm, thisArg, func, args);
+	var_unref(args);
+	return res;
+}
+
+/* Collect the OWN property keys of a plain object/array (no prototype chain).
+ * Array elements live in the nested _ARRAY_ store, so indices come from there. */
+typedef struct { vm_t* vm; var_t* keys; bool enum_only; hash_map_t* seen; } proxy_keys_ctx;
+static void proxy_keys_cb(const char* key, void* value, void* ud) {
+	(void)key;
+	proxy_keys_ctx* d = (proxy_keys_ctx*)ud;
+	node_t* node = (node_t*)value;
+	if(node == NULL || node->be_inherited || node->invisable)
+		return;
+	if(d->enum_only && node->be_unenumerable)
+		return;
+	if(hash_map_get(d->seen, node->name) != NULL)
+		return;
+	hash_map_add(d->seen, node->name, (void*)"");
+	var_array_add(d->keys, var_new_str(d->vm, node->name));
+}
+static var_t* own_keys_default(vm_t* vm, var_t* obj, bool enum_only) {
+	var_t* keys = var_new_array(vm);
+	if(obj == NULL)
+		return keys;
+	vm->gc.gc_defer++;   // keys is unrooted here
+	hash_map_t* seen = hash_map_new();
+	proxy_keys_ctx d; d.vm = vm; d.keys = keys; d.enum_only = enum_only; d.seen = seen;
+	var_t* cont = obj->is_array ? var_find_own_member_var(obj, "_ARRAY_") : obj;
+	if(cont != NULL)
+		hash_map_iterate(&cont->children, proxy_keys_cb, &d);
+	hash_map_free(seen, mario_free, NULL);
+	vm->gc.gc_defer--;
+	return keys;   // refs=0
+}
+
+static bool mario_is_extensible(var_t* obj) {
+	if(obj == NULL)
+		return false;
+	var_t* nx = var_find_own_member_var(obj, OBJ_NO_EXT);
+	return !(nx != NULL && var_get_bool(nx));
+}
+
+/* Default [[DefineOwnProperty]] on a plain target, mirroring native_Object. */
+static bool mario_define_default(vm_t* vm, var_t* obj, var_t* key, var_t* desc) {
+	(void)vm;
+	if(obj == NULL)
+		return false;
+	char numbuf[32];
+	const char* ks = proxy_key_cstr(key, numbuf, sizeof(numbuf));
+	var_t* val = (desc != NULL) ? var_find_own_member_var(desc, "value") : NULL;
+	node_t* node = var_add(obj, ks, val);
+	if(node == NULL)
+		return false;
+	if(desc != NULL) {
+		var_t* w = var_find_own_member_var(desc, "writable");
+		if(w != NULL) node->be_const = !var_get_bool(w);
+		var_t* e = var_find_own_member_var(desc, "enumerable");
+		if(e != NULL) node->be_unenumerable = !var_get_bool(e);
+		var_t* c = var_find_own_member_var(desc, "configurable");
+		if(c != NULL) node->be_const = !var_get_bool(c);
+	}
+	return true;
+}
+
+/* Default [[GetOwnProperty]] on a plain target: a fresh descriptor object, or
+ * undefined when the own property is absent. */
+static var_t* mario_gopd_default(vm_t* vm, var_t* obj, var_t* key) {
+	if(obj == NULL)
+		return var_new(vm);
+	char numbuf[32];
+	const char* ks = proxy_key_cstr(key, numbuf, sizeof(numbuf));
+	node_t* node = var_find_own_member(obj, ks);
+	if(node == NULL)
+		return var_new(vm);
+	var_t* d = var_new_obj_no_proto(vm, NULL, NULL);
+	var_add(d, "value", node->var);
+	var_add(d, "writable", var_new_bool(vm, !node->be_const));
+	var_add(d, "enumerable", var_new_bool(vm, !node->be_unenumerable));
+	var_add(d, "configurable", var_new_bool(vm, !node->be_const));
+	return d;   // refs=0
+}
+
+/* `new ctor(...args)` from a constructor VAR (a proxy forwards to its construct
+ * trap). Returns a refs==0 object, matching new_obj()'s contract. */
+static var_t* construct_from_var(vm_t* vm, var_t* ctor, var_t* argsNatural, var_t* newTarget) {
+	if(ctor == NULL || !var_is_callable(ctor)) {
+		vm_throw_type_native(vm, "TypeError", "target is not a constructor");
+		return var_new(vm);
+	}
+	if(var_is_proxy(ctor))
+		return proxy_construct(vm, ctor, argsNatural, (newTarget != NULL) ? newTarget : ctor);
+	var_t* proto = var_get_prototype(ctor);
+	var_t* obj = var_new_obj(vm, proto, NULL, NULL);
+	var_ref(obj);   // protect across func_call (mirrors new_obj)
+	int arg_num = (argsNatural != NULL) ? (int)var_array_size(argsNatural) : 0;
+	vm->gc.gc_defer++;
+	for(int i = 0; i < arg_num; i++) {
+		node_t* nd = var_array_get(argsNatural, i);
+		vm_push(vm, (nd != NULL && nd->var != NULL) ? nd->var : var_new(vm));
+	}
+	var_t* old_nt = vm->new_target;
+	vm->new_target = (newTarget != NULL) ? newTarget : ctor;
+	func_call(vm, obj, ctor, arg_num);
+	vm->new_target = old_nt;
+	var_t* ret = vm_pop2(vm);
+	if(ret != NULL && ret != obj && ret->type == V_OBJECT) {
+		obj->refs--;
+		obj = ret;
+		obj->refs--;
+	}
+	else {
+		if(ret != NULL) ret->refs--;
+		obj->refs--;
+	}
+	vm->gc.gc_defer--;
+	return obj;   // refs=0
+}
+
+/* ---- proxy-aware primitives (shared by the VM intercept and Reflect.*) ---- */
+
+var_t* mario_get_var(vm_t* vm, var_t* obj, var_t* key, var_t* receiver) {
+	if(obj == NULL)
+		return var_new(vm);
+	if(var_is_proxy(obj))
+		return proxy_get(vm, obj, key, receiver);
+	char numbuf[32];
+	const char* ks = proxy_key_cstr(key, numbuf, sizeof(numbuf));
+	var_t* res = NULL;
+	if(key != NULL && key->type == V_STRING) {
+		do_get(vm, obj, ks, false);          // accessor-aware; pushes (does not consume obj)
+		res = vm_pop2(vm);
+	}
+	else {
+		var_ref(obj);
+		var_t* k = (key != NULL) ? key : var_new(vm);
+		var_ref(k);
+		array_at_push(vm, obj, k);           // consumes both refs; pushes
+		res = vm_pop2(vm);
+	}
+	if(res != NULL && res->refs > 0) res->refs--;   // release the push ref -> baseline
+	return (res != NULL) ? res : var_new(vm);
+}
+
+bool mario_set_var(vm_t* vm, var_t* obj, var_t* key, var_t* value, var_t* receiver) {
+	if(obj == NULL)
+		return false;
+	if(var_is_proxy(obj))
+		return proxy_set(vm, obj, key, value, receiver);
+	char numbuf[32];
+	const char* ks = proxy_key_cstr(key, numbuf, sizeof(numbuf));
+	var_t* val = (value != NULL) ? value : var_new(vm);
+	node_t* n = var_find_member(obj, ks);
+	if(n != NULL && var_is_accessor(n->var)) {
+		var_t* setter = var_accessor_setter(n->var);
+		if(setter == NULL)
+			return false;                     // read-only accessor: ignore (non-strict)
+		var_ref(setter);
+		var_t* args = var_new_array(vm);
+		var_array_add(args, val);
+		var_array_reverse(args);
+		var_t* r = call_m_func(vm, (receiver != NULL) ? receiver : obj, setter, args);
+		var_unref(args);
+		if(r != NULL) var_unref(r);
+		var_unref(setter);
+		return true;
+	}
+	if(obj->is_array && key != NULL && key->type != V_STRING && !var_is_symbol(key)) {
+		var_array_set(obj, var_get_int(key), val);
+		return true;
+	}
+	node_t* on = var_find_own_member(obj, ks);
+	if(on == NULL)
+		on = var_add(obj, ks, NULL);
+	if(on == NULL)
+		return false;
+	node_replace(on, val);
+	return true;
+}
+
+bool mario_has_var(vm_t* vm, var_t* obj, var_t* key) {
+	if(obj == NULL)
+		return false;
+	if(var_is_proxy(obj))
+		return proxy_has(vm, obj, key);
+	char numbuf[32];
+	return var_has_member(obj, proxy_key_cstr(key, numbuf, sizeof(numbuf)));
+}
+
+bool mario_delete_var(vm_t* vm, var_t* obj, var_t* key) {
+	(void)vm;
+	if(obj == NULL)
+		return true;
+	if(var_is_proxy(obj))
+		return proxy_delete(vm, obj, key);
+	char numbuf[32];
+	return var_delete_own_member(obj, proxy_key_cstr(key, numbuf, sizeof(numbuf)));
+}
+
+var_t* mario_own_keys_var(vm_t* vm, var_t* obj, bool strings_only, bool enum_only) {
+	(void)strings_only;
+	if(obj == NULL)
+		return var_new_array(vm);
+	if(var_is_proxy(obj))
+		return proxy_own_keys(vm, obj, strings_only, enum_only);
+	return own_keys_default(vm, obj, enum_only);
+}
+
+/* Proxy-aware primitives for the remaining internal methods, shared by Reflect.*
+ * and the Object.* statics: a proxy routes its trap, any other object the default
+ * operation on itself. Return contract matches the mario_*_var read/write family -
+ * var-returning ops yield a baseline (refs==0) value or a borrowed persistent
+ * prototype, bool ops yield the operation result. The proxy_* entry points are
+ * declared in mario.h, so these may appear before the trap definitions below. */
+var_t* mario_get_prototype_var(vm_t* vm, var_t* obj) {
+	if(obj == NULL)
+		return NULL;
+	if(var_is_proxy(obj))
+		return proxy_get_prototype(vm, obj);   // refs=0 or NULL
+	return var_get_prototype(obj);             // borrowed (persistent prototype)
+}
+
+bool mario_set_prototype_var(vm_t* vm, var_t* obj, var_t* proto) {
+	if(obj == NULL)
+		return false;
+	if(var_is_proxy(obj))
+		return proxy_set_prototype(vm, obj, proto);
+	var_set_prototype(obj, proto);
+	return true;
+}
+
+bool mario_is_extensible_var(vm_t* vm, var_t* obj) {
+	if(obj == NULL)
+		return false;
+	if(var_is_proxy(obj))
+		return proxy_is_extensible(vm, obj);
+	return mario_is_extensible(obj);
+}
+
+bool mario_prevent_extensions_var(vm_t* vm, var_t* obj) {
+	if(obj == NULL)
+		return false;
+	if(var_is_proxy(obj))
+		return proxy_prevent_extensions(vm, obj);
+	node_t* nx = var_add(obj, OBJ_NO_EXT, var_new_bool(vm, true));
+	if(nx != NULL) { nx->invisable = 1; nx->be_unenumerable = 1; }
+	return true;
+}
+
+bool mario_define_property_var(vm_t* vm, var_t* obj, var_t* key, var_t* desc) {
+	if(obj == NULL)
+		return false;
+	if(var_is_proxy(obj))
+		return proxy_define_property(vm, obj, key, desc);
+	return mario_define_default(vm, obj, key, desc);
+}
+
+var_t* mario_gopd_var(vm_t* vm, var_t* obj, var_t* key) {
+	if(obj == NULL)
+		return var_new(vm);
+	if(var_is_proxy(obj)) {
+		var_t* d = proxy_get_own_descriptor(vm, obj, key);   // refs=0 or NULL
+		return (d != NULL) ? d : var_new(vm);
+	}
+	return mario_gopd_default(vm, obj, key);                 // refs=0
+}
+
+var_t* mario_apply_var(vm_t* vm, var_t* func, var_t* thisArg, var_t* argsNatural) {
+	if(func == NULL || !var_is_callable(func)) {
+		vm_throw_type_native(vm, "TypeError", "target is not callable");
+		return var_new(vm);
+	}
+	if(var_is_proxy(func))
+		return proxy_apply(vm, func, thisArg, argsNatural);  // refs=0
+	var_t* r = call_with_args(vm, thisArg, func, argsNatural);
+	if(r != NULL && r->refs > 0) r->refs--;
+	return (r != NULL) ? r : var_new(vm);
+}
+
+var_t* mario_construct_var(vm_t* vm, var_t* ctor, var_t* argsNatural, var_t* newTarget) {
+	if(ctor == NULL) {
+		vm_throw_type_native(vm, "TypeError", "target is not a constructor");
+		return var_new(vm);
+	}
+	return construct_from_var(vm, ctor, argsNatural, newTarget);   // refs=0; proxy-aware
+}
+
+/* ---- the thirteen traps ---- */
+
+var_t* proxy_get(vm_t* vm, var_t* p, var_t* key, var_t* receiver) {
+	if(var_proxy_is_revoked(p)) { proxy_throw_revoked(vm); return var_new(vm); }
+	var_t* fn = proxy_trap_func(p, "get");
+	if(fn != NULL) {
+		var_ref(fn);
+		var_t* recv = (receiver != NULL) ? receiver : p;
+		var_t* argv[2]; argv[0] = key; argv[1] = recv;
+		var_t* res = proxy_call_trap(vm, p, fn, argv, 2);
+		var_unref(fn);
+		if(res != NULL && res->refs > 0) res->refs--;
+		return (res != NULL) ? res : var_new(vm);
+	}
+	return mario_get_var(vm, var_proxy_target(p), key, receiver);
+}
+
+bool proxy_set(vm_t* vm, var_t* p, var_t* key, var_t* value, var_t* receiver) {
+	if(var_proxy_is_revoked(p)) { proxy_throw_revoked(vm); return false; }
+	var_t* fn = proxy_trap_func(p, "set");
+	if(fn != NULL) {
+		var_ref(fn);
+		var_t* recv = (receiver != NULL) ? receiver : p;
+		var_t* argv[3]; argv[0] = key; argv[1] = value; argv[2] = recv;
+		var_t* res = proxy_call_trap(vm, p, fn, argv, 3);
+		var_unref(fn);
+		bool ok = (res != NULL) ? var_get_bool(res) : false;
+		if(res != NULL) var_unref(res);
+		if(!ok)
+			vm_throw_type_native(vm, "TypeError", "proxy set trap returned false");
+		return ok;
+	}
+	return mario_set_var(vm, var_proxy_target(p), key, value, receiver);
+}
+
+bool proxy_has(vm_t* vm, var_t* p, var_t* key) {
+	if(var_proxy_is_revoked(p)) { proxy_throw_revoked(vm); return false; }
+	var_t* fn = proxy_trap_func(p, "has");
+	if(fn != NULL) {
+		var_ref(fn);
+		var_t* argv[1]; argv[0] = key;
+		var_t* res = proxy_call_trap(vm, p, fn, argv, 1);
+		var_unref(fn);
+		bool b = (res != NULL) ? var_get_bool(res) : false;
+		if(res != NULL) var_unref(res);
+		return b;
+	}
+	return mario_has_var(vm, var_proxy_target(p), key);
+}
+
+bool proxy_delete(vm_t* vm, var_t* p, var_t* key) {
+	if(var_proxy_is_revoked(p)) { proxy_throw_revoked(vm); return false; }
+	var_t* fn = proxy_trap_func(p, "deleteProperty");
+	if(fn != NULL) {
+		var_ref(fn);
+		var_t* argv[1]; argv[0] = key;
+		var_t* res = proxy_call_trap(vm, p, fn, argv, 1);
+		var_unref(fn);
+		bool b = (res != NULL) ? var_get_bool(res) : true;
+		if(res != NULL) var_unref(res);
+		return b;
+	}
+	return mario_delete_var(vm, var_proxy_target(p), key);
+}
+
+var_t* proxy_own_keys(vm_t* vm, var_t* p, bool strings_only, bool enum_only) {
+	(void)strings_only;
+	if(var_proxy_is_revoked(p)) { proxy_throw_revoked(vm); return var_new_array(vm); }
+	var_t* fn = proxy_trap_func(p, "ownKeys");
+	if(fn != NULL) {
+		var_ref(fn);
+		var_t* res = proxy_call_trap(vm, p, fn, NULL, 0);
+		var_unref(fn);
+		if(res != NULL && res->refs > 0) res->refs--;
+		return (res != NULL) ? res : var_new_array(vm);
+	}
+	return own_keys_default(vm, var_proxy_target(p), enum_only);
+}
+
+var_t* proxy_apply(vm_t* vm, var_t* p, var_t* thisArg, var_t* args) {
+	if(var_proxy_is_revoked(p)) { proxy_throw_revoked(vm); return var_new(vm); }
+	var_t* target = var_proxy_target(p);
+	if(target == NULL || !var_is_callable(target)) {
+		vm_throw_type_native(vm, "TypeError", "proxy target is not callable");
+		return var_new(vm);
+	}
+	var_t* fn = proxy_trap_func(p, "apply");
+	if(fn != NULL) {
+		var_t* ta = (thisArg != NULL) ? thisArg : var_new(vm);
+		var_t* aa = (args != NULL) ? args : var_new_array(vm);
+		var_ref(fn); var_ref(ta); var_ref(aa);
+		var_t* argv[2]; argv[0] = ta; argv[1] = aa;
+		var_t* res = proxy_call_trap(vm, p, fn, argv, 2);
+		var_unref(fn); var_unref(ta); var_unref(aa);
+		if(res != NULL && res->refs > 0) res->refs--;
+		return (res != NULL) ? res : var_new(vm);
+	}
+	var_t* res = call_with_args(vm, thisArg, target, args);
+	if(res != NULL && res->refs > 0) res->refs--;
+	return (res != NULL) ? res : var_new(vm);
+}
+
+var_t* proxy_construct(vm_t* vm, var_t* p, var_t* args, var_t* newTarget) {
+	if(var_proxy_is_revoked(p)) { proxy_throw_revoked(vm); return var_new(vm); }
+	var_t* target = var_proxy_target(p);
+	if(target == NULL || !var_is_callable(target)) {
+		vm_throw_type_native(vm, "TypeError", "proxy target is not a constructor");
+		return var_new(vm);
+	}
+	var_t* fn = proxy_trap_func(p, "construct");
+	if(fn != NULL) {
+		var_t* aa = (args != NULL) ? args : var_new_array(vm);
+		var_t* nt = (newTarget != NULL) ? newTarget : p;
+		var_ref(fn); var_ref(aa); var_ref(nt);
+		var_t* argv[2]; argv[0] = aa; argv[1] = nt;
+		var_t* res = proxy_call_trap(vm, p, fn, argv, 2);
+		var_unref(fn); var_unref(aa); var_unref(nt);
+		if(res != NULL && res->refs > 0) res->refs--;
+		return (res != NULL) ? res : var_new(vm);
+	}
+	return construct_from_var(vm, target, args, (newTarget != NULL) ? newTarget : target);
+}
+
+var_t* proxy_get_prototype(vm_t* vm, var_t* p) {
+	if(var_proxy_is_revoked(p)) { proxy_throw_revoked(vm); return NULL; }
+	var_t* fn = proxy_trap_func(p, "getPrototypeOf");
+	if(fn != NULL) {
+		var_ref(fn);
+		var_t* res = proxy_call_trap(vm, p, fn, NULL, 0);
+		var_unref(fn);
+		if(res != NULL && res->type != V_OBJECT && res->type != V_NULL) {
+			vm_throw_type_native(vm, "TypeError", "proxy getPrototypeOf must return an object or null");
+			var_unref(res);
+			return NULL;
+		}
+		if(res != NULL && res->refs > 0) res->refs--;
+		return res;
+	}
+	var_t* t = var_proxy_target(p);
+	return (t != NULL) ? var_get_prototype(t) : NULL;
+}
+
+bool proxy_set_prototype(vm_t* vm, var_t* p, var_t* proto) {
+	if(var_proxy_is_revoked(p)) { proxy_throw_revoked(vm); return false; }
+	var_t* fn = proxy_trap_func(p, "setPrototypeOf");
+	if(fn != NULL) {
+		var_t* pv = (proto != NULL) ? proto : var_new_null(vm);
+		var_ref(fn); var_ref(pv);
+		var_t* argv[1]; argv[0] = pv;
+		var_t* res = proxy_call_trap(vm, p, fn, argv, 1);
+		var_unref(fn); var_unref(pv);
+		bool b = (res != NULL) ? var_get_bool(res) : false;
+		if(res != NULL) var_unref(res);
+		return b;
+	}
+	var_t* t = var_proxy_target(p);
+	if(t != NULL) var_set_prototype(t, proto);
+	return true;
+}
+
+bool proxy_is_extensible(vm_t* vm, var_t* p) {
+	if(var_proxy_is_revoked(p)) { proxy_throw_revoked(vm); return false; }
+	var_t* fn = proxy_trap_func(p, "isExtensible");
+	if(fn != NULL) {
+		var_ref(fn);
+		var_t* res = proxy_call_trap(vm, p, fn, NULL, 0);
+		var_unref(fn);
+		bool b = (res != NULL) ? var_get_bool(res) : true;
+		if(res != NULL) var_unref(res);
+		return b;
+	}
+	return mario_is_extensible(var_proxy_target(p));
+}
+
+bool proxy_prevent_extensions(vm_t* vm, var_t* p) {
+	if(var_proxy_is_revoked(p)) { proxy_throw_revoked(vm); return false; }
+	var_t* fn = proxy_trap_func(p, "preventExtensions");
+	if(fn != NULL) {
+		var_ref(fn);
+		var_t* res = proxy_call_trap(vm, p, fn, NULL, 0);
+		var_unref(fn);
+		bool b = (res != NULL) ? var_get_bool(res) : false;
+		if(res != NULL) var_unref(res);
+		if(b && mario_is_extensible(var_proxy_target(p))) {
+			vm_throw_type_native(vm, "TypeError", "proxy preventExtensions trap returned true but the target is extensible");
+			return false;
+		}
+		return b;
+	}
+	var_t* t = var_proxy_target(p);
+	if(t != NULL) {
+		node_t* nx = var_add(t, OBJ_NO_EXT, var_new_bool(vm, true));
+		if(nx != NULL) { nx->invisable = 1; nx->be_unenumerable = 1; }
+	}
+	return true;
+}
+
+bool proxy_define_property(vm_t* vm, var_t* p, var_t* key, var_t* desc) {
+	if(var_proxy_is_revoked(p)) { proxy_throw_revoked(vm); return false; }
+	var_t* fn = proxy_trap_func(p, "defineProperty");
+	if(fn != NULL) {
+		var_t* dv = (desc != NULL) ? desc : var_new(vm);
+		var_ref(fn); var_ref(key); var_ref(dv);
+		var_t* argv[2]; argv[0] = key; argv[1] = dv;
+		var_t* res = proxy_call_trap(vm, p, fn, argv, 2);
+		var_unref(fn); var_unref(key); var_unref(dv);
+		bool b = (res != NULL) ? var_get_bool(res) : false;
+		if(res != NULL) var_unref(res);
+		return b;
+	}
+	return mario_define_default(vm, var_proxy_target(p), key, desc);
+}
+
+var_t* proxy_get_own_descriptor(vm_t* vm, var_t* p, var_t* key) {
+	if(var_proxy_is_revoked(p)) { proxy_throw_revoked(vm); return NULL; }
+	var_t* fn = proxy_trap_func(p, "getOwnPropertyDescriptor");
+	if(fn != NULL) {
+		var_ref(fn); var_ref(key);
+		var_t* argv[1]; argv[0] = key;
+		var_t* res = proxy_call_trap(vm, p, fn, argv, 1);
+		var_unref(fn); var_unref(key);
+		if(res != NULL && res->refs > 0) res->refs--;
+		return res;
+	}
+	return mario_gopd_default(vm, var_proxy_target(p), key);
 }
 
 static inline void handle_include(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
