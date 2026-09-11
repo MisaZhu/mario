@@ -20,6 +20,7 @@ typedef enum {
 	LEX_INT,
 	LEX_FLOAT,
 	LEX_STR,
+	LEX_BIGINT,
 	LEX_BASIC_END
 } lex_basic_type_t;
 

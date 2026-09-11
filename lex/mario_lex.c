@@ -305,6 +305,14 @@ void lex_get_basic_token(lex_t* lex) {
 				lex_get_nextch(lex);
 			}
 		}
+		// BigInt literal: a trailing 'n' on an integer literal (decimal or hex).
+		// A float/exponent already set tk to LEX_FLOAT, so tk==LEX_INT excludes
+		// them; the guard stops `1n` from absorbing a following identifier char.
+		if (lex->tk == LEX_INT && lex->curr_ch=='n' &&
+		    !is_alpha(lex->next_ch) && !is_numeric(lex->next_ch)) {
+			lex->tk = LEX_BIGINT;
+			lex_get_nextch(lex); // consume the 'n' suffix
+		}
 	} else if (lex->curr_ch=='"') {
 		// strings...
 		lex_get_nextch(lex);

@@ -20,7 +20,9 @@ static const char* inmstr_str(opr_code_t ins) {
 		case INSTR_INT64        : return "INT64";
 		case INSTR_FLOAT64      : return "FLOAT64";
 		case INSTR_STR          : return "STR";
+		case INSTR_BIGINT       : return "BIGINT";
 		case INSTR_ARRAY_AT     : return "ARRAT";
+		case INSTR_ARRAY_AT_W   : return "ARRATW";
 		case INSTR_ARRAY        : return "ARR";
 		case INSTR_ARRAY_END    : return "ARRE";
 		case INSTR_LOAD         : return "LOAD";
@@ -93,6 +95,10 @@ static const char* inmstr_str(opr_code_t ins) {
 		case INSTR_CATCH        : return "CATCH";
 		case INSTR_INSTOF       : return "INSTOF";
 		case INSTR_TYPEOF       : return "TYPEOF";
+		case INSTR_DELETE       : return "DELETE";
+		case INSTR_DELETE_AT    : return "DELAT";
+		case INSTR_DELETE_VAR   : return "DELVAR";
+		case INSTR_IN           : return "IN";
 		case INSTR_STRICT       : return "STRICT";
 		case INSTR_INCLUDE      : return "INCLUDE";
 		default                 : return "";

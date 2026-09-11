@@ -108,6 +108,48 @@ float       mstr_to_float(const char* str);
 void        mstr_split(const char* str, char c, m_array_t* array);
 int         mstr_to(const char* str, char c, mstr_t* res, bool skipspace);
 
+/**====== bignum (ES2020 BigInt) functions. ======*/
+
+/* Arbitrary-precision signed integer: a little-endian base-2^32 magnitude held
+ * in `limbs` (limbs[0] is the least significant) with a separate sign in
+ * {-1,0,+1}. Zero is always sign==0, len==0. Backs the V_BIGINT tag: a bigint
+ * var's `value` points at a bignum_t and its `free_func` is bn_free. Hand-rolled
+ * (no external deps); magnitudes grow on demand. */
+typedef struct st_bignum {
+	int                 sign;   // -1, 0, +1
+	uint32_t            len;    // number of limbs in use (high limbs never zero)
+	uint32_t            cap;    // number of limbs allocated
+	uint32_t*           limbs;  // little-endian base-2^32 magnitude
+} bignum_t;
+
+bignum_t*   bn_new(void);
+void        bn_free(void* p);                  // free_func_t-compatible (frees limbs + struct)
+bignum_t*   bn_clone(const bignum_t* b);
+bignum_t*   bn_from_int64(int64_t v);
+bignum_t*   bn_from_uint64(uint64_t v);
+bignum_t*   bn_from_double(double d);          // d must be finite and integral
+bignum_t*   bn_from_string(const char* s, int radix); // radix 0: auto-detect 0x/0b/0o/decimal
+void        bn_to_mstr(const bignum_t* b, int radix, mstr_t* out); // appends "[sign]digits"
+int64_t     bn_to_int64(const bignum_t* b);    // low 64 bits, reinterpreted signed
+double      bn_to_double(const bignum_t* b);   // nearest double (may lose precision)
+bool        bn_is_zero(const bignum_t* b);
+int         bn_cmp(const bignum_t* a, const bignum_t* b);      // -1 / 0 / +1
+int         bn_cmp_double(const bignum_t* a, double d);        // exact for integral d in int64 range
+bignum_t*   bn_add(const bignum_t* a, const bignum_t* b);
+bignum_t*   bn_sub(const bignum_t* a, const bignum_t* b);
+bignum_t*   bn_mul(const bignum_t* a, const bignum_t* b);
+bignum_t*   bn_div(const bignum_t* a, const bignum_t* b);      // truncating; NULL if b==0
+bignum_t*   bn_mod(const bignum_t* a, const bignum_t* b);      // sign of dividend; NULL if b==0
+bignum_t*   bn_pow(const bignum_t* base, const bignum_t* exp); // NULL if exp<0 (JS RangeError)
+bignum_t*   bn_neg(const bignum_t* a);
+bignum_t*   bn_and(const bignum_t* a, const bignum_t* b);      // infinite two's complement
+bignum_t*   bn_or(const bignum_t* a, const bignum_t* b);
+bignum_t*   bn_xor(const bignum_t* a, const bignum_t* b);
+bignum_t*   bn_shl(const bignum_t* a, uint32_t bits);
+bignum_t*   bn_shr(const bignum_t* a, uint32_t bits);          // arithmetic (floor) shift right
+bignum_t*   bn_asIntN(uint32_t bits, const bignum_t* a);
+bignum_t*   bn_asUintN(uint32_t bits, const bignum_t* a);
+
 /**====== MARIO_BC ======*/
 
 //bytecode
@@ -263,6 +305,12 @@ typedef struct st_bytecode {
 #define INSTR_CALLXO_SPREAD 0x074 // CALLXO_SPREAD : pop args array, call the func value beneath it with the receiver beneath that (`obj[k](...a)`)
 #define INSTR_INT64        0x075 // INT64 lo,hi   : push an int64 literal held in 2 consecutive PC words
 #define INSTR_FLOAT64      0x076 // FLOAT64 lo,hi : push a double literal held in 2 consecutive PC words
+#define INSTR_BIGINT       0x077 // BIGINT $n     : push a BigInt literal; the digit string rides the mstr_table like INSTR_STR (arbitrary width)
+#define INSTR_DELETE       0x078 // DELETE $n     : pop obj, delete own member $n, push bool   (`delete o.x`)
+#define INSTR_IN           0x079 // IN            : pop obj, pop key, push bool  (key in obj: own + prototype chain)
+#define INSTR_DELETE_AT    0x07A // DELETE_AT     : pop key, pop obj, delete own member [key], push bool  (`delete o[k]`)
+#define INSTR_DELETE_VAR   0x07B // DELETE_VAR $n : delete the global binding $n, push bool  (`delete x`)
+#define INSTR_ARRAY_AT_W   0x07C // ARRAT_W : subscript as an assignment target; pops key + receiver, pushes a synthetic @@taslot node carrying the TypedArray + index (compiled from `ta[i] = ..` / `ta[i] += ..`)
 
 #define INSTR_MAX          0x090 // Maximum instruction opcode value
 
@@ -297,6 +345,7 @@ extern const char* _mario_lang;
 #define V_NULL   6
 #define V_INT64  7  // int64_t   (exact large integers: 2^31..2^63-1)
 #define V_FLOAT64 8  // double    (canonical float: every float literal / fractional result)
+#define V_BIGINT 9  // bignum_t* (arbitrary-precision integer; typeof -> "bigint")
 
 #define V_ST_FREE      0
 #define V_ST_GC_FREE   1
@@ -318,6 +367,41 @@ extern const char* _mario_lang;
 #define SYMKEY_ASYNCITERATOR "@@S:asyncIterator"
 #define SYMKEY_TOSTRINGTAG "@@S:toStringTag"
 #define SYMKEY_TOPRIMITIVE "@@S:toPrimitive"
+
+/* Exotic objects (ArrayBuffer / SharedArrayBuffer / TypedArray / DataView /
+ * Proxy) are ordinary V_OBJECT vars that carry ONE hidden invisable marker
+ * member EXOTIC_MARKER whose string value is the kind, mirroring SYM_MARKER.
+ * Plain objects never carry it, so var_is_exotic() is a single fast hash miss
+ * and the property-access intercept added in Phases 3-5 is a genuine no-op for
+ * them (behaviour-preserving). Raw bytes / trap tables ride sibling hidden
+ * members; see the native_*.c constructors that set the marker. */
+#define EXOTIC_MARKER "@@exotic"
+#define EXOTIC_ARRAYBUFFER "ab"     // ArrayBuffer (raw byte holder)
+#define EXOTIC_SHARED      "shared" // SharedArrayBuffer (ArrayBuffer + @@shared)
+#define EXOTIC_TYPEDARRAY  "ta"     // TypedArray view over a buffer
+#define EXOTIC_DATAVIEW    "dv"     // DataView over a buffer
+#define EXOTIC_PROXY       "proxy"  // Proxy(target, handler)
+
+/* TypedArray element-type codes (hidden @@etype member, a V_INT). One code per
+ * concrete view; the element-access primitives in mario.c (var_typedarray_get_at
+ * / _set_at) switch on it for width, signedness, clamping and BigInt storage.
+ * TA_UINT8CLAMPED is the only non-wrapping integer type (round-half-even clamp). */
+#define TA_INT8          0
+#define TA_UINT8         1
+#define TA_UINT8CLAMPED  2
+#define TA_INT16         3
+#define TA_UINT16        4
+#define TA_INT32         5
+#define TA_UINT32        6
+#define TA_FLOAT32       7
+#define TA_FLOAT64       8
+#define TA_BIGINT64      9
+#define TA_BIGUINT64     10
+#define TA_ETYPE_COUNT   11
+
+#define TA_ETYPE         "@@etype"   // hidden own member: the TA_* element-type code (V_INT)
+#define TA_SLOT          "@@taslot"  // synthetic write-target node name (see INSTR_ARRAY_AT_W)
+#define TA_SLOT_TA       "@@ta"      // hidden member on the @@taslot node's var: the ref'd TypedArray
 
 struct st_vm;
 
@@ -470,6 +554,7 @@ typedef struct st_vm {
 		var_t*          var_Object;
 		var_t*          var_String;
 		var_t*          var_Number;
+		var_t*          var_BigInt;
 		var_t*          var_Error;
 		var_t*          var_Array;
 		var_t*          var_true;
@@ -549,6 +634,8 @@ var_t*      var_set_int64(var_t* var, int64_t v);
 var_t*      var_new_float64(vm_t* vm, double d);
 double      var_get_float64(var_t* var);
 var_t*      var_set_float64(var_t* var, double v);
+var_t*      var_new_bigint(vm_t* vm, bignum_t* b); // takes ownership of b (freed via bn_free)
+bignum_t*   var_get_bigint(var_t* var);            // NULL unless var is a V_BIGINT
 bool        var_is_number(var_t* var);
 func_t*     var_get_func(var_t* var);
 var_t*      var_get_prototype(var_t* var);
@@ -563,6 +650,30 @@ void        var_to_str(var_t*, mstr_t*);
 
 bool        var_is_symbol(var_t* var);
 const char* var_symbol_key(var_t* var);
+
+/* Exotic-object markers (see EXOTIC_MARKER). var_is_exotic is the single cheap
+ * discriminator the property-access intercept gates on; the kind predicates read
+ * the marker's string value. All are false for plain objects. */
+bool        var_is_exotic(var_t* var);
+const char* var_exotic_kind(var_t* var);      // marker value ("ab"/"ta"/...) or NULL
+bool        var_is_arraybuffer(var_t* var);   // ArrayBuffer or SharedArrayBuffer
+bool        var_is_typedarray(var_t* var);
+bool        var_is_dataview(var_t* var);
+bool        var_is_proxy(var_t* var);
+
+/* TypedArray element access, implemented in mario.c next to the exotic
+ * predicates so the read/write intercept does not depend on the lang native.
+ * get_at decodes element `idx` of the buffer into a fresh var (OOB -> NULL,
+ * which the caller turns into undefined); set_at encodes `val` into element
+ * `idx` (clamping / wrapping / BigInt per the etype) and returns false on OOB
+ * or a detached/mis-typed receiver. Both are host-endian and memcpy-safe. */
+var_t*      var_typedarray_get_at(vm_t* vm, var_t* ta, int64_t idx);
+bool        var_typedarray_set_at(vm_t* vm, var_t* ta, int64_t idx, var_t* val);
+
+/* Member removal / presence used by the `delete` and `in` operators (and by
+ * Reflect.deleteProperty / Reflect.has in Phase 5). */
+bool        var_delete_own_member(var_t* obj, const char* name);
+bool        var_has_member(var_t* obj, const char* name); // own + prototype chain
 var_t*      vm_get_iterator(vm_t* vm, var_t* iterable);
 var_t*      vm_new_array_iterator(vm_t* vm, var_t* arr);
 var_t*      vm_new_string_iterator(vm_t* vm, var_t* str);
@@ -593,6 +704,14 @@ var_t*      vm_new_class(vm_t* vm, const char* cls);
 var_t*      new_obj(vm_t* vm, const char* cls_name, int arg_num);
 void        vm_throw(vm_t* vm, const char* format, ...);
 void        vm_throw_native(vm_t* vm, const char* format, ...);
+/* Throw a typed error (e.g. "TypeError"/"RangeError"): builds an instance whose
+ * [[Prototype]] is that class's prototype (so `instanceof` and `.name` work),
+ * then unwinds to the nearest try scope like vm_throw. */
+void        vm_throw_type(vm_t* vm, const char* type_name, const char* format, ...);
+/* Deferred typed throw for use INSIDE a native: records the typed error in
+ * vm->native_thrown (like vm_throw_native) so func_call unwinds after the native
+ * returns and the value stack stays balanced. The native still returns a dummy. */
+void        vm_throw_type_native(vm_t* vm, const char* type_name, const char* format, ...);
 node_t*     vm_find(vm_t* vm, const char* name);
 node_t*     vm_find_in_class(var_t* var, const char* name);
 node_t*     vm_reg_var(vm_t* vm, var_t* cls, const char* name, var_t* var, bool be_const);

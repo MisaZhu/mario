@@ -720,6 +720,691 @@ int mstr_to(const char* str, char c, mstr_t* res, bool skipspace) {
 	return i;
 }
 
+/**======bignum (ES2020 BigInt) library======*/
+
+/* Sign-magnitude arbitrary precision integer. `limbs` is a little-endian
+ * base-2^32 magnitude (limbs[0] least significant) with no redundant leading
+ * zero limb (bn_normalize keeps that invariant); `sign` is -1/0/+1 and is 0
+ * exactly when the value is zero. All public bn_* functions return fresh
+ * bignum_t* owned by the caller (freed with bn_free), except the *_inplace
+ * helpers. Allocation failures are not modelled: mario_malloc aborts. */
+
+static inline void bn_normalize(bignum_t* b) {
+	while(b->len > 0 && b->limbs[b->len-1] == 0)
+		b->len--;
+	if(b->len == 0)
+		b->sign = 0;
+}
+
+static inline void bn_grow(bignum_t* b, uint32_t n) {
+	if(n <= b->cap)
+		return;
+	uint32_t cap = b->cap ? b->cap : 2;
+	while(cap < n)
+		cap *= 2;
+	uint32_t* p = (uint32_t*)mario_malloc(cap * sizeof(uint32_t));
+	if(b->limbs != NULL) {
+		memcpy(p, b->limbs, b->cap * sizeof(uint32_t));
+		mario_free(b->limbs);
+	}
+	for(uint32_t i = b->cap; i < cap; i++)
+		p[i] = 0;
+	b->limbs = p;
+	b->cap = cap;
+}
+
+bignum_t* bn_new(void) {
+	bignum_t* b = (bignum_t*)mario_malloc(sizeof(bignum_t));
+	b->sign = 0;
+	b->len = 0;
+	b->cap = 0;
+	b->limbs = NULL;
+	return b;
+}
+
+void bn_free(void* p) {
+	if(p == NULL)
+		return;
+	bignum_t* b = (bignum_t*)p;
+	if(b->limbs != NULL)
+		mario_free(b->limbs);
+	mario_free(b);
+}
+
+bignum_t* bn_clone(const bignum_t* src) {
+	bignum_t* b = bn_new();
+	if(src->len > 0) {
+		bn_grow(b, src->len);
+		memcpy(b->limbs, src->limbs, src->len * sizeof(uint32_t));
+		b->len = src->len;
+		b->sign = src->sign;
+	}
+	return b;
+}
+
+bool bn_is_zero(const bignum_t* b) {
+	return b == NULL || b->len == 0 || b->sign == 0;
+}
+
+bignum_t* bn_from_uint64(uint64_t v) {
+	bignum_t* b = bn_new();
+	if(v == 0)
+		return b;
+	bn_grow(b, 2);
+	b->limbs[0] = (uint32_t)(v & 0xFFFFFFFFULL);
+	b->limbs[1] = (uint32_t)(v >> 32);
+	b->len = (b->limbs[1] != 0) ? 2 : 1;
+	b->sign = 1;
+	return b;
+}
+
+bignum_t* bn_from_int64(int64_t v) {
+	uint64_t m = (v < 0) ? (uint64_t)(-(v + 1)) + 1 : (uint64_t)v;
+	bignum_t* b = bn_from_uint64(m);
+	if(v < 0 && b->len > 0)
+		b->sign = -1;
+	return b;
+}
+
+/* Compare magnitudes (ignore sign). */
+static int bn_cmp_abs(const bignum_t* a, const bignum_t* b) {
+	if(a->len != b->len)
+		return (a->len > b->len) ? 1 : -1;
+	for(uint32_t i = a->len; i > 0; i--) {
+		uint32_t x = a->limbs[i-1], y = b->limbs[i-1];
+		if(x != y)
+			return (x > y) ? 1 : -1;
+	}
+	return 0;
+}
+
+int bn_cmp(const bignum_t* a, const bignum_t* b) {
+	if(a->sign != b->sign)
+		return (a->sign > b->sign) ? 1 : -1;
+	if(a->sign == 0)
+		return 0;
+	int c = bn_cmp_abs(a, b);
+	return (a->sign > 0) ? c : -c;
+}
+
+/* r = |a| + |b| (sign left at 0 for the caller to set). */
+static bignum_t* bn_add_abs(const bignum_t* a, const bignum_t* b) {
+	bignum_t* r = bn_new();
+	uint32_t n = (a->len > b->len) ? a->len : b->len;
+	bn_grow(r, n + 1);
+	uint64_t carry = 0;
+	for(uint32_t i = 0; i < n; i++) {
+		uint64_t av = (i < a->len) ? a->limbs[i] : 0;
+		uint64_t bv = (i < b->len) ? b->limbs[i] : 0;
+		uint64_t s = av + bv + carry;
+		r->limbs[i] = (uint32_t)(s & 0xFFFFFFFFULL);
+		carry = s >> 32;
+	}
+	if(carry)
+		r->limbs[n++] = (uint32_t)carry;
+	r->len = n;
+	bn_normalize(r);
+	return r;
+}
+
+/* r = |a| - |b| (magnitudes); precondition |a| >= |b|. */
+static bignum_t* bn_sub_abs(const bignum_t* a, const bignum_t* b) {
+	bignum_t* r = bn_new();
+	uint32_t n = a->len;
+	bn_grow(r, n ? n : 1);
+	int64_t borrow = 0;
+	for(uint32_t i = 0; i < n; i++) {
+		int64_t av = (int64_t)a->limbs[i];
+		int64_t bv = (i < b->len) ? (int64_t)b->limbs[i] : 0;
+		int64_t d = av - bv - borrow;
+		if(d < 0) { d += 4294967296LL; borrow = 1; }
+		else borrow = 0;
+		r->limbs[i] = (uint32_t)d;
+	}
+	r->len = n;
+	bn_normalize(r);
+	return r;
+}
+
+/* r -= |b| in place (magnitudes); precondition |r| >= |b|. */
+static void bn_sub_abs_inplace(bignum_t* r, const bignum_t* b) {
+	int64_t borrow = 0;
+	for(uint32_t i = 0; i < r->len; i++) {
+		int64_t rv = (int64_t)r->limbs[i];
+		int64_t bv = (i < b->len) ? (int64_t)b->limbs[i] : 0;
+		int64_t d = rv - bv - borrow;
+		if(d < 0) { d += 4294967296LL; borrow = 1; }
+		else borrow = 0;
+		r->limbs[i] = (uint32_t)d;
+	}
+	bn_normalize(r);
+}
+
+bignum_t* bn_add(const bignum_t* a, const bignum_t* b) {
+	if(a->sign == 0) return bn_clone(b);
+	if(b->sign == 0) return bn_clone(a);
+	if(a->sign == b->sign) {
+		bignum_t* r = bn_add_abs(a, b);
+		r->sign = a->sign;
+		return r;
+	}
+	int c = bn_cmp_abs(a, b);
+	if(c == 0) return bn_new();
+	if(c > 0) {
+		bignum_t* r = bn_sub_abs(a, b);
+		r->sign = a->sign;
+		return r;
+	}
+	bignum_t* r = bn_sub_abs(b, a);
+	r->sign = b->sign;
+	return r;
+}
+
+bignum_t* bn_sub(const bignum_t* a, const bignum_t* b) {
+	bignum_t nb;              // -b without allocating: bn_add only reads it
+	nb.sign = -b->sign;
+	nb.len = b->len;
+	nb.cap = b->cap;
+	nb.limbs = b->limbs;
+	return bn_add(a, &nb);
+}
+
+bignum_t* bn_neg(const bignum_t* a) {
+	bignum_t* r = bn_clone(a);
+	r->sign = -a->sign;
+	return r;
+}
+
+bignum_t* bn_mul(const bignum_t* a, const bignum_t* b) {
+	if(a->sign == 0 || b->sign == 0)
+		return bn_new();
+	uint32_t n = a->len + b->len;
+	bignum_t* r = bn_new();
+	bn_grow(r, n);
+	for(uint32_t i = 0; i < a->len; i++) {
+		uint64_t av = a->limbs[i];
+		uint64_t carry = 0;
+		for(uint32_t j = 0; j < b->len; j++) {
+			uint64_t cur = (uint64_t)r->limbs[i+j] + av * (uint64_t)b->limbs[j] + carry;
+			r->limbs[i+j] = (uint32_t)(cur & 0xFFFFFFFFULL);
+			carry = cur >> 32;
+		}
+		uint32_t k = i + b->len;
+		while(carry) {
+			uint64_t cur = (uint64_t)r->limbs[k] + carry;
+			r->limbs[k] = (uint32_t)(cur & 0xFFFFFFFFULL);
+			carry = cur >> 32;
+			k++;
+		}
+	}
+	r->len = n;
+	r->sign = (a->sign == b->sign) ? 1 : -1;
+	bn_normalize(r);
+	return r;
+}
+
+/* b *= m (small multiplier, m <= 2^32-1) in place. */
+static void bn_mul_small_inplace(bignum_t* b, uint32_t m) {
+	if(b->len == 0)
+		return;
+	if(m == 0) { b->len = 0; b->sign = 0; return; }
+	if(m == 1)
+		return;
+	bn_grow(b, b->len + 1);
+	uint64_t carry = 0;
+	for(uint32_t i = 0; i < b->len; i++) {
+		uint64_t v = (uint64_t)b->limbs[i] * m + carry;
+		b->limbs[i] = (uint32_t)(v & 0xFFFFFFFFULL);
+		carry = v >> 32;
+	}
+	if(carry) { b->limbs[b->len] = (uint32_t)carry; b->len++; }
+}
+
+/* b += v (small addend) in place. */
+static void bn_add_small_inplace(bignum_t* b, uint32_t v) {
+	if(v == 0)
+		return;
+	bn_grow(b, b->len + 1);
+	uint64_t carry = v;
+	uint32_t i = 0;
+	while(carry) {
+		uint64_t s = (uint64_t)b->limbs[i] + carry;
+		b->limbs[i] = (uint32_t)(s & 0xFFFFFFFFULL);
+		carry = s >> 32;
+		i++;
+	}
+	if(i > b->len)
+		b->len = i;
+	bn_normalize(b);
+}
+
+/* b /= d in place (small divisor 2..2^36); returns the remainder. */
+static uint32_t bn_divmod_small_inplace(bignum_t* b, uint32_t d) {
+	uint64_t rem = 0;
+	for(uint32_t i = b->len; i > 0; i--) {
+		uint64_t cur = (rem << 32) | (uint64_t)b->limbs[i-1];
+		b->limbs[i-1] = (uint32_t)(cur / d);
+		rem = cur % d;
+	}
+	bn_normalize(b);
+	return (uint32_t)rem;
+}
+
+/* Binary long division of magnitudes: |a| / |b| -> (*q, *r), both non-negative.
+ * Precondition b != 0. O(bits(a) * limbs) - fine for script-sized BigInts. */
+static void bn_divmod_abs(const bignum_t* a, const bignum_t* b, bignum_t** q_out, bignum_t** r_out) {
+	bignum_t* q = bn_new();
+	bignum_t* rem = bn_new();
+	if(bn_cmp_abs(a, b) < 0) {
+		bn_free(rem);
+		rem = bn_clone(a);
+		if(rem->len) rem->sign = 1;
+		*q_out = q; *r_out = rem;
+		return;
+	}
+	bn_grow(q, a->len);
+	bn_grow(rem, a->len + 2);
+	uint32_t nbits = a->len * 32;
+	for(uint32_t i = nbits; i > 0; i--) {
+		uint32_t bit = i - 1;
+		uint32_t limb = bit >> 5, off = bit & 31;
+		/* rem = (rem << 1) | bit_of_a */
+		if(rem->len) {
+			uint32_t carry = 0;
+			for(uint32_t k = 0; k < rem->len; k++) {
+				uint32_t x = rem->limbs[k];
+				rem->limbs[k] = (x << 1) | carry;
+				carry = x >> 31;
+			}
+			if(carry) { rem->limbs[rem->len] = carry; rem->len++; }
+		}
+		if((a->limbs[limb] >> off) & 1) {
+			rem->limbs[0] |= 1;
+			if(rem->len == 0) rem->len = 1;
+		}
+		if(bn_cmp_abs(rem, b) >= 0) {
+			bn_sub_abs_inplace(rem, b);
+			q->limbs[limb] |= (1u << off);
+			if(q->len <= limb) q->len = limb + 1;
+		}
+	}
+	q->sign = q->len ? 1 : 0;
+	bn_normalize(q);
+	rem->sign = rem->len ? 1 : 0;
+	bn_normalize(rem);
+	*q_out = q; *r_out = rem;
+}
+
+bignum_t* bn_div(const bignum_t* a, const bignum_t* b) {
+	if(bn_is_zero(b))
+		return NULL;               // caller raises RangeError (division by zero)
+	bignum_t *q, *r;
+	bn_divmod_abs(a, b, &q, &r);
+	bn_free(r);
+	if(q->len)
+		q->sign = (a->sign == b->sign) ? 1 : -1; // truncate toward zero
+	return q;
+}
+
+bignum_t* bn_mod(const bignum_t* a, const bignum_t* b) {
+	if(bn_is_zero(b))
+		return NULL;
+	bignum_t *q, *r;
+	bn_divmod_abs(a, b, &q, &r);
+	bn_free(q);
+	if(r->len)
+		r->sign = a->sign;         // remainder takes the sign of the dividend
+	return r;
+}
+
+/* base ** exp by binary exponentiation. exp must be >= 0 (else NULL: JS throws
+ * RangeError for a negative BigInt exponent). Squaring stops at exp's top bit
+ * so the intermediate never exceeds base^(2^bitlen(exp)). */
+bignum_t* bn_pow(const bignum_t* base, const bignum_t* exp) {
+	if(exp->sign < 0)
+		return NULL;
+	bignum_t* result = bn_from_int64(1);
+	if(exp->sign == 0)
+		return result;             // x ** 0 == 1n
+	int top = -1;
+	for(uint32_t i = exp->len; i > 0 && top < 0; i--) {
+		uint32_t x = exp->limbs[i-1];
+		if(x != 0) {
+			uint32_t bsr = 0;
+			while(x >>= 1) bsr++;
+			top = (int)((i-1) * 32 + bsr);
+		}
+	}
+	bignum_t* b = bn_clone(base);
+	for(int i = 0; i <= top; i++) {
+		uint32_t limb = (uint32_t)i >> 5, off = (uint32_t)i & 31;
+		if((exp->limbs[limb] >> off) & 1) {
+			bignum_t* t = bn_mul(result, b);
+			bn_free(result);
+			result = t;
+		}
+		if(i < top) {
+			bignum_t* sq = bn_mul(b, b);
+			bn_free(b);
+			b = sq;
+		}
+	}
+	bn_free(b);
+	return result;
+}
+
+/* Infinite two's-complement bitwise (AND/OR/XOR). Negative operands are treated
+ * as ~(mag-1) with an infinite run of leading 1 bits; the result's fill limb
+ * decides its sign, and a negative result is converted back to magnitude. */
+static bignum_t* bn_bitwise(const bignum_t* a, const bignum_t* b, int which) {
+	uint32_t n = (a->len > b->len) ? a->len : b->len;
+	uint32_t a_fill = (a->sign < 0) ? 0xFFFFFFFFu : 0u;
+	uint32_t b_fill = (b->sign < 0) ? 0xFFFFFFFFu : 0u;
+	uint32_t r_fill;
+	if(which == 0)      r_fill = a_fill & b_fill;
+	else if(which == 1) r_fill = a_fill | b_fill;
+	else                r_fill = a_fill ^ b_fill;
+
+	uint32_t* A = (uint32_t*)mario_malloc((n + 1) * sizeof(uint32_t));
+	uint32_t* B = (uint32_t*)mario_malloc((n + 1) * sizeof(uint32_t));
+	/* Expand each operand to n+1 two's-complement limbs. A non-negative operand
+	 * is zero-extended; a negative one is ~(mag-1) computed with a running
+	 * borrow, which naturally yields 0xFFFFFFFF limbs past the magnitude (mag>=1
+	 * always clears the borrow by the top limb). */
+	uint32_t borrow = 1;
+	for(uint32_t i = 0; i <= n; i++) {
+		uint32_t x = (i < a->len) ? a->limbs[i] : 0u;
+		if(a->sign < 0) { uint32_t y = x - borrow; borrow = (x < borrow) ? 1u : 0u; A[i] = ~y; }
+		else A[i] = x;
+	}
+	A[n] = a_fill;
+	borrow = 1;
+	for(uint32_t i = 0; i <= n; i++) {
+		uint32_t x = (i < b->len) ? b->limbs[i] : 0u;
+		if(b->sign < 0) { uint32_t y = x - borrow; borrow = (x < borrow) ? 1u : 0u; B[i] = ~y; }
+		else B[i] = x;
+	}
+	B[n] = b_fill;
+
+	bignum_t* r = bn_new();
+	bn_grow(r, n + 1);
+	for(uint32_t i = 0; i <= n; i++) {
+		uint32_t x = A[i], y = B[i];
+		r->limbs[i] = (which == 0) ? (x & y) : (which == 1) ? (x | y) : (x ^ y);
+	}
+	mario_free(A);
+	mario_free(B);
+	r->len = n + 1;
+	if(r_fill == 0xFFFFFFFFu) {
+		/* negative result: magnitude = ~R + 1 */
+		uint64_t carry = 1;
+		for(uint32_t i = 0; i < r->len; i++) {
+			uint64_t v = (uint64_t)(~r->limbs[i]) + carry;
+			r->limbs[i] = (uint32_t)(v & 0xFFFFFFFFULL);
+			carry = v >> 32;
+		}
+		if(carry) {
+			bn_grow(r, r->len + 1);
+			r->limbs[r->len] = (uint32_t)carry;
+			r->len++;
+		}
+		r->sign = -1;
+		bn_normalize(r);
+	} else {
+		r->sign = 1;
+		bn_normalize(r);
+	}
+	return r;
+}
+
+bignum_t* bn_and(const bignum_t* a, const bignum_t* b) { return bn_bitwise(a, b, 0); }
+bignum_t* bn_or (const bignum_t* a, const bignum_t* b) { return bn_bitwise(a, b, 1); }
+bignum_t* bn_xor(const bignum_t* a, const bignum_t* b) { return bn_bitwise(a, b, 2); }
+
+bignum_t* bn_shl(const bignum_t* a, uint32_t bits) {
+	if(a->sign == 0 || bits == 0)
+		return bn_clone(a);
+	uint32_t wordshift = bits >> 5, bitshift = bits & 31;
+	uint32_t n = a->len + wordshift + (bitshift ? 1 : 0) + 1;
+	bignum_t* r = bn_new();
+	bn_grow(r, n);
+	uint32_t carry = 0;
+	for(uint32_t i = 0; i < a->len; i++) {
+		uint64_t x = (uint64_t)a->limbs[i];
+		r->limbs[i + wordshift] = (uint32_t)((x << bitshift) | carry);
+		carry = (bitshift == 0) ? 0 : (uint32_t)(x >> (32 - bitshift));
+	}
+	if(carry)
+		r->limbs[a->len + wordshift] = carry;
+	r->len = n;
+	r->sign = a->sign;
+	bn_normalize(r);
+	return r;
+}
+
+/* Logical (magnitude) shift right; result is non-negative. */
+static bignum_t* bn_shr_mag(const bignum_t* a, uint32_t bits) {
+	bignum_t* r = bn_new();
+	if(a->len == 0 || bits == 0)   // magnitude zero-check via len (sign may be unset on magnitudes)
+		return (bits == 0) ? bn_clone(a) : r;
+	uint32_t wordshift = bits >> 5, bitshift = bits & 31;
+	if(wordshift >= a->len)
+		return r;
+	uint32_t n = a->len - wordshift;
+	bn_grow(r, n);
+	for(uint32_t i = 0; i < n; i++) {
+		uint32_t src = i + wordshift;
+		uint32_t lo = a->limbs[src];
+		uint32_t hi = (bitshift && src + 1 < a->len) ? a->limbs[src+1] : 0;
+		r->limbs[i] = (bitshift == 0) ? lo : ((lo >> bitshift) | (hi << (32 - bitshift)));
+	}
+	r->len = n;
+	r->sign = 1;
+	bn_normalize(r);
+	return r;
+}
+
+/* Arithmetic shift right = floor(a / 2^bits). */
+bignum_t* bn_shr(const bignum_t* a, uint32_t bits) {
+	if(a->sign == 0 || bits == 0)
+		return bn_clone(a);
+	if(a->sign > 0)
+		return bn_shr_mag(a, bits);
+	/* negative: floor(a/2^k) = -( ((|a|-1) >> k) + 1 ) */
+	bignum_t* mag = bn_clone(a); mag->sign = 1;
+	bignum_t* one = bn_from_int64(1);
+	bignum_t* mag1 = bn_sub_abs(mag, one);
+	mag1->sign = mag1->len ? 1 : 0;   // bn_sub_abs leaves sign unset; make mag1 well-formed
+	bn_free(mag);
+	bignum_t* shifted = bn_shr_mag(mag1, bits);
+	bn_free(mag1);
+	bignum_t* plus1 = bn_add_abs(shifted, one);
+	bn_free(shifted);
+	bn_free(one);
+	plus1->sign = plus1->len ? -1 : 0;
+	bn_normalize(plus1);
+	return plus1;
+}
+
+int64_t bn_to_int64(const bignum_t* b) {
+	if(b->sign == 0)
+		return 0;
+	uint64_t lo = b->limbs[0];
+	uint64_t hi = (b->len > 1) ? b->limbs[1] : 0;
+	uint64_t mag = lo | (hi << 32);
+	if(b->sign < 0)
+		return (int64_t)(0ULL - mag);
+	return (int64_t)mag;
+}
+
+double bn_to_double(const bignum_t* b) {
+	if(b->sign == 0)
+		return 0.0;
+	double d = 0.0;
+	for(uint32_t i = b->len; i > 0; i--)
+		d = d * 4294967296.0 + (double)b->limbs[i-1];
+	return (b->sign < 0) ? -d : d;
+}
+
+bignum_t* bn_from_double(double d) {
+	/* Caller guarantees d is finite and integral (BigInt(x) throws otherwise). */
+	if(d >= -9223372036854775808.0 && d < 9223372036854775808.0)
+		return bn_from_int64((int64_t)d);
+	int sign = (d < 0) ? -1 : 1;
+	d = fabs(d);
+	int exp = 0;
+	double mant = frexp(d, &exp);                       // d = mant * 2^exp
+	uint64_t significand = (uint64_t)(mant * 9007199254740992.0); // mant * 2^53
+	int shift = exp - 53;
+	bignum_t* b = bn_from_uint64(significand);
+	bignum_t* r = (shift >= 0) ? bn_shl(b, (uint32_t)shift)
+	                           : bn_shr_mag(b, (uint32_t)(-shift));
+	bn_free(b);
+	if(sign < 0 && r->len)
+		r->sign = -1;
+	return r;
+}
+
+int bn_cmp_double(const bignum_t* a, double d) {
+	if(isnan(d))
+		return 0;
+	if(isinf(d))
+		return (d > 0) ? -1 : 1;
+	if(d == trunc(d) && d >= -9223372036854775808.0 && d < 9223372036854775808.0) {
+		bignum_t* b = bn_from_int64((int64_t)d);
+		int r = bn_cmp(a, b);
+		bn_free(b);
+		return r;
+	}
+	double da = bn_to_double(a);
+	return (da < d) ? -1 : (da > d) ? 1 : 0;
+}
+
+/* a mod 2^bits, mathematical (result always in [0, 2^bits)). */
+static bignum_t* bn_mod_pow2(const bignum_t* a, uint32_t bits) {
+	bignum_t* r = bn_new();
+	if(bits == 0)
+		return r;
+	uint32_t words = (bits + 31) >> 5;
+	uint32_t lowbits = bits & 31;
+	bn_grow(r, words);
+	uint32_t n = (a->len < words) ? a->len : words;
+	for(uint32_t i = 0; i < n; i++)
+		r->limbs[i] = a->limbs[i];
+	if(lowbits && n == words)
+		r->limbs[words-1] &= (1u << lowbits) - 1;
+	r->len = words;
+	bn_normalize(r);
+	if(a->sign < 0 && r->len != 0) {
+		/* negative: result = 2^bits - (|a| mod 2^bits) = (~r + 1) within width */
+		bn_grow(r, words);
+		uint64_t carry = 1;
+		for(uint32_t i = 0; i < words; i++) {
+			uint64_t v = (uint64_t)(~r->limbs[i]) + carry;
+			r->limbs[i] = (uint32_t)(v & 0xFFFFFFFFULL);
+			carry = v >> 32;
+		}
+		if(lowbits)
+			r->limbs[words-1] &= (1u << lowbits) - 1;
+		r->len = words;
+		bn_normalize(r);
+	}
+	r->sign = r->len ? 1 : 0;
+	return r;
+}
+
+bignum_t* bn_asUintN(uint32_t bits, const bignum_t* a) {
+	return bn_mod_pow2(a, bits);
+}
+
+bignum_t* bn_asIntN(uint32_t bits, const bignum_t* a) {
+	if(bits == 0)
+		return bn_new();
+	bignum_t* r = bn_mod_pow2(a, bits);
+	uint32_t topword = (bits - 1) >> 5, topoff = (bits - 1) & 31;
+	bool high = (topword < r->len) && ((r->limbs[topword] >> topoff) & 1);
+	if(high) {
+		uint32_t words = (bits + 31) >> 5, lowbits = bits & 31;
+		bn_grow(r, words);
+		uint64_t carry = 1;
+		for(uint32_t i = 0; i < words; i++) {
+			uint64_t v = (uint64_t)(~r->limbs[i]) + carry;
+			r->limbs[i] = (uint32_t)(v & 0xFFFFFFFFULL);
+			carry = v >> 32;
+		}
+		if(lowbits)
+			r->limbs[words-1] &= (1u << lowbits) - 1;
+		r->len = words;
+		bn_normalize(r);
+		r->sign = r->len ? -1 : 0;
+	}
+	return r;
+}
+
+bignum_t* bn_from_string(const char* s, int radix) {
+	bignum_t* r = bn_new();
+	if(s == NULL)
+		return r;
+	while(*s == ' ' || *s == '\t' || *s == '\n' || *s == '\r')
+		s++;
+	int sign = 1;
+	if(*s == '+') s++;
+	else if(*s == '-') { sign = -1; s++; }
+	if(radix == 0) {
+		radix = 10;
+		if(s[0] == '0') {
+			if(s[1] == 'x' || s[1] == 'X') { radix = 16; s += 2; }
+			else if(s[1] == 'b' || s[1] == 'B') { radix = 2; s += 2; }
+			else if(s[1] == 'o' || s[1] == 'O') { radix = 8; s += 2; }
+		}
+	} else if(radix == 16 && s[0] == '0' && (s[1] == 'x' || s[1] == 'X')) {
+		s += 2;
+	}
+	if(radix < 2 || radix > 36)
+		radix = 10;
+	bool any = false;
+	for(; *s; s++) {
+		char c = *s;
+		if(c == '_')
+			continue;
+		int dv;
+		if(c >= '0' && c <= '9') dv = c - '0';
+		else if(c >= 'a' && c <= 'z') dv = c - 'a' + 10;
+		else if(c >= 'A' && c <= 'Z') dv = c - 'A' + 10;
+		else break;
+		if(dv >= radix)
+			break;
+		any = true;
+		bn_mul_small_inplace(r, (uint32_t)radix);
+		bn_add_small_inplace(r, (uint32_t)dv);
+	}
+	if(any)
+		r->sign = r->len ? sign : 0;
+	return r;
+}
+
+void bn_to_mstr(const bignum_t* b, int radix, mstr_t* out) {
+	if(radix < 2 || radix > 36)
+		radix = 10;
+	if(b->sign == 0) {
+		mstr_add(out, '0');
+		return;
+	}
+	if(b->sign < 0)
+		mstr_add(out, '-');
+	bignum_t* mag = bn_clone(b);
+	mag->sign = 1;
+	uint32_t cap = mag->len * 32 + 4;
+	char* digits = (char*)mario_malloc(cap);
+	uint32_t di = 0;
+	while(mag->len > 0 && di < cap)
+		digits[di++] = "0123456789abcdefghijklmnopqrstuvwxyz"[bn_divmod_small_inplace(mag, (uint32_t)radix)];
+	for(uint32_t i = di; i > 0; i--)
+		mstr_add(out, digits[i-1]);
+	mario_free(digits);
+	bn_free(mag);
+}
+
 /**======bytecode functions======*/
 
 #define BC_BUF_SIZE  3232
@@ -1207,6 +1892,197 @@ bool var_is_symbol(var_t* var) {
 const char* var_symbol_key(var_t* var) {
 	var_t* k = var_find_own_member_var(var, SYM_MARKER);
 	return (k != NULL && k->type == V_STRING) ? var_get_str(k) : NULL;
+}
+
+/* Exotic-object markers: an exotic object (ArrayBuffer / SharedArrayBuffer /
+ * TypedArray / DataView / Proxy) is an ordinary V_OBJECT carrying a hidden own
+ * member EXOTIC_MARKER whose string value is its kind. var_is_exotic() is the
+ * single discriminator the property-access intercept (Phases 3-5) gates on; for
+ * a plain object it is one hash miss, so the intercept stays a genuine no-op. */
+const char* var_exotic_kind(var_t* var) {
+	if(var == NULL || var->type != V_OBJECT || var->is_array || var->is_func)
+		return NULL;
+	var_t* k = var_find_own_member_var(var, EXOTIC_MARKER);
+	return (k != NULL && k->type == V_STRING) ? var_get_str(k) : NULL;
+}
+
+bool var_is_exotic(var_t* var) {
+	return var_exotic_kind(var) != NULL;
+}
+
+bool var_is_arraybuffer(var_t* var) {
+	const char* k = var_exotic_kind(var);
+	return k != NULL && (strcmp(k, EXOTIC_ARRAYBUFFER) == 0 || strcmp(k, EXOTIC_SHARED) == 0);
+}
+
+bool var_is_typedarray(var_t* var) {
+	const char* k = var_exotic_kind(var);
+	return k != NULL && strcmp(k, EXOTIC_TYPEDARRAY) == 0;
+}
+
+bool var_is_dataview(var_t* var) {
+	const char* k = var_exotic_kind(var);
+	return k != NULL && strcmp(k, EXOTIC_DATAVIEW) == 0;
+}
+
+bool var_is_proxy(var_t* var) {
+	const char* k = var_exotic_kind(var);
+	return k != NULL && strcmp(k, EXOTIC_PROXY) == 0;
+}
+
+/* ====== TypedArray element access ======
+ * A TypedArray is a V_OBJECT with hidden marker @@exotic="ta", a hidden @@etype
+ * (TA_* code), and JS-readable unenumerable `buffer` (the shared ArrayBuffer),
+ * `byteOffset`, `byteLength`, `length`, `BYTES_PER_ELEMENT`. The buffer's raw
+ * bytes are the single source of truth so DataView and multiple TypedArray views
+ * over one ArrayBuffer stay live. Element access is host-endian and memcpy-safe
+ * (no unaligned deref); get_at returns a fresh decoded var (OOB -> NULL, which
+ * the caller renders as undefined), set_at encodes with clamping/wrapping/BigInt
+ * per the etype and returns false on OOB or a detached/mis-typed receiver. */
+static const uint32_t ta_elem_size[TA_ETYPE_COUNT] = { 1,1,1,2,2,4,4,4,8,8,8 };
+
+/* ToNumber for the write path: strings via strtod (JS `ta[0]="5"` -> 5), other
+ * types via the shared numeric coercion. BigInt is handled by the caller. */
+static double ta_to_number(var_t* v) {
+	if(v == NULL)
+		return 0.0;
+	if(v->type == V_STRING) {
+		const char* s = var_get_str(v);
+		while(*s==' '||*s=='\t'||*s=='\n'||*s=='\r') s++;
+		if(*s == 0) return 0.0;
+		char* end = NULL;
+		double d = strtod(s, &end);
+		while(end != NULL && (*end==' '||*end=='\t'||*end=='\n'||*end=='\r')) end++;
+		if(end != NULL && *end != 0) return NAN;
+		return d;
+	}
+	return var_get_float64(v);
+}
+
+/* ToIntegerOrInfinity then saturate into int64 (NaN/Inf -> 0, matching V8 for
+ * integer-view stores); the caller masks to the target width for the wrap. */
+static int64_t ta_to_integer(double d) {
+	if(isnan(d) || isinf(d)) return 0;
+	if(d >=  9223372036854775807.0) return INT64_MAX;
+	if(d <= -9223372036854775807.0) return INT64_MIN;
+	return (int64_t)d; /* truncates toward zero */
+}
+
+static uint8_t* ta_elem_ptr(var_t* ta, int64_t idx, int et, uint8_t** out_base) {
+	var_t* buf = var_find_own_member_var(ta, "buffer");
+	if(buf == NULL || !var_is_arraybuffer(buf) || buf->value == NULL)
+		return NULL;
+	int64_t len = var_get_int64(var_find_own_member_var(ta, "length"));
+	if(idx < 0 || idx >= len)
+		return NULL; /* OOB */
+	uint32_t esz = ta_elem_size[et];
+	uint32_t off = (uint32_t)var_get_int64(var_find_own_member_var(ta, "byteOffset"));
+	uint8_t* p = (uint8_t*)buf->value + off + (uint32_t)idx * esz;
+	if(out_base != NULL) *out_base = p;
+	return p;
+}
+
+var_t* var_typedarray_get_at(vm_t* vm, var_t* ta, int64_t idx) {
+	if(ta == NULL || !var_is_typedarray(ta))
+		return NULL;
+	int et = var_get_int(var_find_own_member_var(ta, TA_ETYPE));
+	if(et < 0 || et >= TA_ETYPE_COUNT)
+		return NULL;
+	uint8_t* p = ta_elem_ptr(ta, idx, et, NULL);
+	if(p == NULL)
+		return NULL; /* OOB read -> undefined */
+	switch(et) {
+		case TA_INT8:         { int8_t   v; memcpy(&v,p,1); return var_new_int(vm, (int)v); }
+		case TA_UINT8:
+		case TA_UINT8CLAMPED: { uint8_t  v; memcpy(&v,p,1); return var_new_int(vm, (int)v); }
+		case TA_INT16:        { int16_t  v; memcpy(&v,p,2); return var_new_int(vm, (int)v); }
+		case TA_UINT16:       { uint16_t v; memcpy(&v,p,2); return var_new_int(vm, (int)v); }
+		case TA_INT32:        { int32_t  v; memcpy(&v,p,4); return var_new_int(vm, (int)v); }
+		case TA_UINT32:       { uint32_t v; memcpy(&v,p,4); return var_new_int64(vm, (int64_t)v); }
+		case TA_FLOAT32:      { float    v; memcpy(&v,p,4); return var_new_float64(vm, (double)v); }
+		case TA_FLOAT64:      { double   v; memcpy(&v,p,8); return var_new_float64(vm, v); }
+		case TA_BIGINT64:     { uint64_t v; memcpy(&v,p,8); return var_new_bigint(vm, bn_from_int64((int64_t)v)); }
+		case TA_BIGUINT64:    { uint64_t v; memcpy(&v,p,8); return var_new_bigint(vm, bn_from_uint64(v)); }
+		default:              return NULL;
+	}
+}
+
+bool var_typedarray_set_at(vm_t* vm, var_t* ta, int64_t idx, var_t* val) {
+	(void)vm;
+	if(ta == NULL || !var_is_typedarray(ta))
+		return false;
+	int et = var_get_int(var_find_own_member_var(ta, TA_ETYPE));
+	if(et < 0 || et >= TA_ETYPE_COUNT)
+		return false;
+	uint8_t* p = ta_elem_ptr(ta, idx, et, NULL);
+	if(p == NULL)
+		return false; /* OOB write -> ignored (non-strict) */
+	switch(et) {
+		case TA_INT8:         { int8_t   v=(int8_t)  ta_to_integer(ta_to_number(val)); memcpy(p,&v,1); break; }
+		case TA_UINT8:        { uint8_t  v=(uint8_t) ta_to_integer(ta_to_number(val)); memcpy(p,&v,1); break; }
+		case TA_UINT8CLAMPED: {
+			double d = ta_to_number(val);
+			uint8_t v;
+			if(isnan(d) || d <= 0.0) v = 0;
+			else if(isinf(d) || d >= 255.0) v = 255;
+			else {
+				double fl = floor(d), diff = d - fl;
+				if(diff > 0.5) v = (uint8_t)(fl + 1.0);
+				else if(diff < 0.5) v = (uint8_t)fl;
+				else v = (uint8_t)((fmod(fl,2.0)==0.0) ? fl : fl + 1.0); /* tie -> even */
+			}
+			memcpy(p,&v,1); break;
+		}
+		case TA_INT16:        { int16_t  v=(int16_t) ta_to_integer(ta_to_number(val)); memcpy(p,&v,2); break; }
+		case TA_UINT16:       { uint16_t v=(uint16_t)ta_to_integer(ta_to_number(val)); memcpy(p,&v,2); break; }
+		case TA_INT32:        { int32_t  v=(int32_t) ta_to_integer(ta_to_number(val)); memcpy(p,&v,4); break; }
+		case TA_UINT32:       { uint32_t v=(uint32_t)ta_to_integer(ta_to_number(val)); memcpy(p,&v,4); break; }
+		case TA_FLOAT32:      { float    v=(float)   ta_to_number(val);                memcpy(p,&v,4); break; }
+		case TA_FLOAT64:      { double   v=          ta_to_number(val);                memcpy(p,&v,8); break; }
+		case TA_BIGINT64:
+		case TA_BIGUINT64:    {
+			bignum_t* b = var_get_bigint(val);
+			uint64_t v = (b != NULL) ? (uint64_t)bn_to_int64(b)
+			                         : (uint64_t)ta_to_integer(ta_to_number(val));
+			memcpy(p,&v,8); break;
+		}
+		default: return false;
+	}
+	return true;
+}
+
+
+/* `delete obj.name`: unlink and free the own member node. JS non-strict
+ * semantics - deleting an own configurable property OR a non-existent one both
+ * yield true (this VM does not model non-configurability). Proxy deleteProperty
+ * interception is layered on in Phase 5; for plain/TypedArray/ArrayBuffer
+ * objects this plain removal is exactly right. */
+bool var_delete_own_member(var_t* obj, const char* name) {
+	if(obj == NULL || name == NULL)
+		return true;
+	node_t* node = (node_t*)hash_map_remove(&obj->children, name);
+	if(node != NULL)
+		node_free(node);
+	return true;
+}
+
+/* `name in obj`: own OR prototype-chain presence. Arrays keep their elements in
+ * the nested _ARRAY_ store, so a numeric index is looked up there; "length" is
+ * a virtual own property of arrays/strings (do_get computes it on the fly). */
+bool var_has_member(var_t* obj, const char* name) {
+	if(obj == NULL || name == NULL)
+		return false;
+	if(obj->is_array) {
+		if(strcmp(name, "length") == 0)
+			return true;
+		var_t* arr = var_find_own_member_var(obj, "_ARRAY_");
+		if(arr != NULL && hash_map_get(&arr->children, name) != NULL)
+			return true;
+	}
+	else if(obj->type == V_STRING && strcmp(name, "length") == 0) {
+		return true;
+	}
+	return var_find_member(obj, name) != NULL;
 }
 
 node_t* var_find_member(var_t* obj, const char* name) {
@@ -1745,6 +2621,8 @@ static const char* get_typeof(var_t* var) {
 		case V_INT64:
 		case V_FLOAT64:
 			return "number";
+		case V_BIGINT:
+			return "bigint";
 		case V_BOOL: 
 			return "boolean";
 		case V_STRING: 
@@ -1869,6 +2747,26 @@ inline var_t* var_new_float64(vm_t* vm, double d) {
 	return var;
 }
 
+/* Wrap a bignum_t (ownership transfers to the var; freed via bn_free). The
+ * prototype is BigInt.prototype so `(5n).toString(2)` resolves; guarded because
+ * var_BigInt is only cached after the natives are registered. */
+inline var_t* var_new_bigint(vm_t* vm, bignum_t* b) {
+	var_t* var = var_new(vm);
+	var->type = V_BIGINT;
+	var->value = b;
+	var->free_func = bn_free;
+	var_t* proto = (vm->builtin_vars.var_BigInt != NULL)
+	               ? var_get_prototype(vm->builtin_vars.var_BigInt) : NULL;
+	var_set_prototype(var, proto);
+	return var;
+}
+
+inline bignum_t* var_get_bigint(var_t* var) {
+	if(var == NULL || var->type != V_BIGINT)
+		return NULL;
+	return (bignum_t*)var->value;
+}
+
 inline var_t* var_new_str(vm_t* vm, const char* s) {
 	var_t* var = var_new(vm);
 	var->type = V_STRING;
@@ -1919,6 +2817,7 @@ inline bool var_get_bool(var_t* var) {
 		case V_INT64:   return *(int64_t*)var->value != 0;
 		case V_FLOAT:   return *(float*)var->value != 0.0f;
 		case V_FLOAT64: return *(double*)var->value != 0.0;
+		case V_BIGINT:  return ((bignum_t*)var->value)->sign != 0;
 		default:        return *(int*)var->value != 0; // V_BOOL / V_INT
 	}
 }
@@ -1949,6 +2848,8 @@ static inline bool var_truthy(var_t* v) {
 			double d = *(double*)v->value;
 			return d != 0.0 && d == d; // NaN is falsy
 		}
+		case V_BIGINT:
+			return ((bignum_t*)v->value)->sign != 0; // 0n is falsy
 		case V_STRING:
 			return var_get_str(v)[0] != 0;
 		default: // V_OBJECT and friends
@@ -1967,6 +2868,7 @@ inline int var_get_int(var_t* var) {
 		case V_FLOAT:   return (int)(*(float*)var->value);
 		case V_INT64:   return (int)(*(int64_t*)var->value);
 		case V_FLOAT64: return (int)(*(double*)var->value);
+		case V_BIGINT:  return (int)bn_to_int64((bignum_t*)var->value);
 		default:        return *(int*)var->value; // V_INT / V_BOOL
 	}
 }
@@ -1987,6 +2889,7 @@ inline float var_get_float(var_t* var) {
 		case V_INT:     return (float)(*(int*)var->value);
 		case V_INT64:   return (float)(*(int64_t*)var->value);
 		case V_FLOAT64: return (float)(*(double*)var->value);
+		case V_BIGINT:  return (float)bn_to_double((bignum_t*)var->value);
 		default:        return *(float*)var->value; // V_FLOAT
 	}
 }
@@ -2008,6 +2911,7 @@ inline int64_t var_get_int64(var_t* var) {
 		case V_INT64:   return *(int64_t*)var->value;
 		case V_FLOAT:   return (int64_t)(*(float*)var->value);
 		case V_FLOAT64: return (int64_t)(*(double*)var->value);
+		case V_BIGINT:  return bn_to_int64((bignum_t*)var->value);
 		case V_BOOL:    return (int64_t)(*(int*)var->value);
 		default:        return 0;
 	}
@@ -2030,6 +2934,7 @@ inline double var_get_float64(var_t* var) {
 		case V_INT64:   return (double)(*(int64_t*)var->value);
 		case V_FLOAT:   return (double)(*(float*)var->value);
 		case V_FLOAT64: return *(double*)var->value;
+		case V_BIGINT:  return bn_to_double((bignum_t*)var->value);
 		case V_BOOL:    return (double)(*(int*)var->value);
 		default:        return 0.0;
 	}
@@ -2164,6 +3069,9 @@ void var_to_str(var_t* var, mstr_t* ret) {
 		break;
 	case V_NULL:
 		mstr_cpy(ret, "null");
+		break;
+	case V_BIGINT:
+		bn_to_mstr((bignum_t*)var->value, 10, ret);
 		break;
 	default:
 		mstr_cpy(ret, "undefined");
@@ -2781,6 +3689,84 @@ void vm_throw_native(vm_t* vm, const char *format, ...) {
 	vm->native_thrown = var_ref(err);
 }
 
+/* Build a typed error instance ("TypeError"/"RangeError"/...): the class is
+ * looked up by name and the instance's [[Prototype]] is set to that class's
+ * prototype, so `e instanceof TypeError` and `e.name` behave correctly (unlike
+ * vm_throw, which attaches the bare Error class var). Own `message` and `name`
+ * members are created the same way native_Error's constructor does. Returned
+ * with refs=0; the caller either pushes it (vm_throw_type) or defers it
+ * (vm_throw_type_native). */
+static var_t* vm_make_type_error(vm_t* vm, const char* type_name, const char* message) {
+	node_t* cn = vm_load_node(vm, type_name, false);
+	var_t* cls = (cn != NULL) ? cn->var : NULL;
+	var_t* proto = (cls != NULL) ? var_get_prototype(cls) : NULL;
+	if(proto == NULL)
+		proto = vm->builtin_vars.var_Error;
+
+	var_t* err = var_new_obj(vm, proto, NULL, NULL);
+	node_t* nm = var_find_member(err, "message");
+	if(nm != NULL && nm->var != NULL)
+		var_set_str(nm->var, message);
+	else
+		var_add(err, "message", var_new_str(vm, message));
+	node_t* nn = var_find_member(err, "name");
+	if(nn != NULL && nn->var != NULL)
+		var_set_str(nn->var, type_name);
+	else
+		var_add(err, "name", var_new_str(vm, type_name));
+	return err;
+}
+
+/* Deferred typed throw for use INSIDE native functions: records the same typed
+ * error instance vm_throw_type would raise in vm->native_thrown instead of
+ * unwinding, so func_call delivers it to the nearest try scope after the native
+ * returns and the value stack (env-pop / ret-push) stays balanced. The native
+ * must still return a dummy value. */
+void vm_throw_type_native(vm_t* vm, const char* type_name, const char* format, ...) {
+	char message[BUF_SIZE+1] = {0};
+	va_list ap;
+	va_start(ap, format);
+	vsnprintf(message, BUF_SIZE, format, ap);
+	va_end(ap);
+
+	var_t* err = vm_make_type_error(vm, type_name, message);
+	if(vm->native_thrown != NULL)
+		var_unref(vm->native_thrown);
+	vm->native_thrown = var_ref(err);
+}
+
+/* Throw a specific standard error type, unwinding the stack to the nearest
+ * try/catch exactly like vm_throw(). For use from VM instruction handlers, NOT
+ * from inside a native (see vm_throw_type_native for that). */
+void vm_throw_type(vm_t* vm, const char* type_name, const char* format, ...) {
+	char message[BUF_SIZE+1] = {0};
+	va_list ap;
+	va_start(ap, format);
+	vsnprintf(message, BUF_SIZE, format, ap);
+	va_end(ap);
+
+	var_t* err = vm_make_type_error(vm, type_name, message);
+	vm_push(vm, err);
+
+	scope_t* try_sc = vm_get_try_catch_scope(vm);
+	if(try_sc == NULL) {
+		vm_pop(vm);
+		return;
+	}
+	while(true) {
+		scope_t* sc = vm_get_scope(vm);
+		if(sc == NULL) {
+			vm_pop(vm);
+			break;
+		}
+		if(sc->is_try) {
+			vm->pc = sc->pc;
+			break;
+		}
+		vm_pop_scope(vm);
+	}
+}
+
 
 static inline var_t* vm_this_in_scopes(vm_t* vm) {
 	node_t* n = vm_find_in_scopes(vm, THIS);
@@ -3099,14 +4085,36 @@ static inline bool is_compound_assign(opr_code_t op) {
 	}
 }
 
+/* If `n` is a synthetic @@taslot write-target (INSTR_ARRAY_AT_W), encode `val`
+ * into the referenced TypedArray element and return true (the caller frees the
+ * sentinel with node_free instead of node_replace). False for a normal binding
+ * node, so array/object/variable targets are untouched. The @@taslot check is a
+ * single byte test plus strcmp on the sentinel name only. */
+static bool ta_slot_write(vm_t* vm, node_t* n, var_t* val) {
+	if(n == NULL || n->name == NULL || n->name[0] != '@' || strcmp(n->name, TA_SLOT) != 0)
+		return false;
+	var_t* ta = var_find_own_member_var(n->var, TA_SLOT_TA);
+	int64_t idx = (int64_t)(int32_t)n->ncache_instr;
+	if(ta != NULL)
+		var_typedarray_set_at(vm, ta, idx, val);
+	return true;
+}
+
 /* Publish an arithmetic result. For a compound assignment (`x += y`) the freshly
  * built result var is installed through the lvalue's node instead of being
  * written into v1 in place: one var_t is shared by every alias of a binding
  * (`var b = a;` leaves both nodes referencing the same var) and integer literals
  * are shared through vm->var_cache, so an in-place write corrupts all of them. */
 static inline void math_result(vm_t* vm, opr_code_t op, node_t* n, var_t* res) {
-	if(n != NULL && is_compound_assign(op))
-		node_replace(n, res); //the node takes its own reference to res.
+	if(n != NULL && is_compound_assign(op)) {
+		/* A synthetic @@taslot target (INSTR_ARRAY_AT_W): encode the result into
+		 * the TypedArray's buffer and free the sentinel instead of node_replace
+		 * (which would only rebind the throw-away node->var). */
+		if(ta_slot_write(vm, n, res))
+			node_free(n);
+		else
+			node_replace(n, res); //the node takes its own reference to res.
+	}
 	vm_push(vm, res);
 }
 
@@ -3186,6 +4194,74 @@ static inline bool int64_arith(opr_code_t op, int64_t a, int64_t b, int64_t* out
 static inline void math_op(vm_t* vm, opr_code_t op, var_t* v1, var_t* v2, node_t* n) {
 	if(v1 == NULL || v2 == NULL) {
 		vm_push(vm, var_new(vm));
+		return;
+	}
+
+	/* ---- BigInt lane ----
+	 * BigInt arithmetic is exact and never silently mixes with Number. When both
+	 * operands are BigInt, `+ - * / % ** & | ^ << >>` stay BigInt (bitwise is
+	 * arbitrary-width two's complement; `>>` is an arithmetic/floor shift). Any
+	 * mix of BigInt with another type is a TypeError except `+` with a string or
+	 * object, which concatenates. `>>>` is meaningless for BigInt (TypeError).
+	 * Division/modulo by zero, a negative exponent, or a negative shift count are
+	 * RangeError. (Bitwise compound assigns like `&=` are desugared by the
+	 * compiler into a plain op + store, so only the base opcodes appear here.) */
+	if(v1->type == V_BIGINT || v2->type == V_BIGINT) {
+		if(op == INSTR_URSHIFT) {
+			vm_throw_type(vm, "TypeError", "BigInts have no unsigned right shift");
+			return;
+		}
+		if(v1->type == V_BIGINT && v2->type == V_BIGINT) {
+			bignum_t* x = (bignum_t*)v1->value;
+			bignum_t* y = (bignum_t*)v2->value;
+			bignum_t* r = NULL;
+			switch(op) {
+				case INSTR_PLUS:   case INSTR_PLUSEQ:   r = bn_add(x, y); break;
+				case INSTR_MINUS:  case INSTR_MINUSEQ:  r = bn_sub(x, y); break;
+				case INSTR_MULTI:  case INSTR_MULTIEQ:  r = bn_mul(x, y); break;
+				case INSTR_DIV:    case INSTR_DIVEQ:
+					if(bn_is_zero(y)) { vm_throw_type(vm, "RangeError", "Division by zero"); return; }
+					r = bn_div(x, y); break;
+				case INSTR_MOD:    case INSTR_MODEQ:
+					if(bn_is_zero(y)) { vm_throw_type(vm, "RangeError", "Division by zero"); return; }
+					r = bn_mod(x, y); break;
+				case INSTR_POW:    case INSTR_POWEQ:
+					if(y->sign < 0) { vm_throw_type(vm, "RangeError", "BigInt negative exponent"); return; }
+					r = bn_pow(x, y); break;
+				case INSTR_AND:    r = bn_and(x, y); break;
+				case INSTR_OR:     r = bn_or(x, y); break;
+				case INSTR_XOR:    r = bn_xor(x, y); break;
+				case INSTR_LSHIFT:
+					if(y->sign < 0) { vm_throw_type(vm, "RangeError", "Negative shift count"); return; }
+					r = bn_shl(x, (uint32_t)bn_to_int64(y)); break;
+				case INSTR_RSHIFT:
+					if(y->sign < 0) { vm_throw_type(vm, "RangeError", "Negative shift count"); return; }
+					r = bn_shr(x, (uint32_t)bn_to_int64(y)); break;
+				default:
+					vm_throw_type(vm, "TypeError", "Cannot mix BigInt and other types");
+					return;
+			}
+			math_result(vm, op, n, var_new_bigint(vm, r ? r : bn_new()));
+			return;
+		}
+		/* Mixed BigInt / non-BigInt: `+` concatenates with a string or object,
+		 * everything else is a TypeError. */
+		if(op == INSTR_PLUS || op == INSTR_PLUSEQ) {
+			var_t* other = (v1->type == V_BIGINT) ? v2 : v1;
+			if(other->type == V_STRING || other->type == V_OBJECT) {
+				mstr_t* s = mstr_new("");
+				var_to_str(v1, s);
+				mstr_t* s2 = mstr_new("");
+				var_to_str(v2, s2);
+				mstr_append(s, s2->cstr);
+				mstr_free(s2);
+				var_t* v = var_new_str(vm, s->cstr);
+				mstr_free(s);
+				math_result(vm, op, n, v);
+				return;
+			}
+		}
+		vm_throw_type(vm, "TypeError", "Cannot mix BigInt and other types");
 		return;
 	}
 
@@ -3313,6 +4389,59 @@ static inline void compare(vm_t* vm, opr_code_t op, var_t* v1, var_t* v2) {
         return;
     }
     
+	/* ---- BigInt comparisons ----
+	 * bigint vs bigint: exact, and `===`/`==` agree (same type). bigint vs a
+	 * Number: `===`/`!==` are false/true (different types) while `==`/`!=` and the
+	 * relational ops compare by mathematical value — exactly against an integer
+	 * operand, via double for a fractional/huge one, and NaN makes every
+	 * comparison false (except !=/!==). bigint vs bool/string/null/undefined/
+	 * object falls through to the generic loose-equality rules below, matching how
+	 * this VM already treats other mixed-type comparisons. */
+	if(v1->type == V_BIGINT || v2->type == V_BIGINT) {
+		bool both = (v1->type == V_BIGINT && v2->type == V_BIGINT);
+		var_t* ov = (v1->type == V_BIGINT) ? v2 : v1;
+		bool numeric = (ov->type == V_INT || ov->type == V_INT64 ||
+		                ov->type == V_FLOAT || ov->type == V_FLOAT64);
+		if(both || numeric) {
+			int c;
+			if(both) {
+				c = bn_cmp((bignum_t*)v1->value, (bignum_t*)v2->value);
+			}
+			else {
+				bignum_t* b = (bignum_t*)((v1->type == V_BIGINT) ? v1->value : v2->value);
+				int local;
+				if(ov->type == V_INT || ov->type == V_INT64) {
+					bignum_t* ob = bn_from_int64(var_get_int64(ov));
+					local = bn_cmp(b, ob);
+					bn_free(ob);
+				}
+				else {
+					double od = var_get_float64(ov);
+					if(isnan(od)) {
+						bool ni = (op == INSTR_NEQ || op == INSTR_NTEQ);
+						vm_push(vm, ni ? vm->builtin_vars.var_true : vm->builtin_vars.var_false);
+						return;
+					}
+					local = bn_cmp_double(b, od);
+				}
+				c = (v1->type == V_BIGINT) ? local : -local;
+			}
+			bool i = false;
+			switch(op) {
+				case INSTR_TEQ: i = both ? (c == 0) : false; break;
+				case INSTR_NTEQ: i = both ? (c != 0) : true; break;
+				case INSTR_EQ:  i = (c == 0); break;
+				case INSTR_NEQ: i = (c != 0); break;
+				case INSTR_LES: i = (c < 0); break;
+				case INSTR_GRT: i = (c > 0); break;
+				case INSTR_LEQ: i = (c <= 0); break;
+				case INSTR_GEQ: i = (c >= 0); break;
+			}
+			vm_push(vm, i ? vm->builtin_vars.var_true : vm->builtin_vars.var_false);
+			return;
+		}
+	}
+
 	// Both integers (int32/int64): compare exactly in int64 (no double rounding).
 	if((v1->type == V_INT || v1->type == V_INT64) &&
 	   (v2->type == V_INT || v2->type == V_INT64)) {
@@ -3999,6 +5128,9 @@ static inline void handle_neg(vm_t* vm, PC ins, opr_code_t instr, uint32_t offse
 		case V_FLOAT64:
 			vm_push(vm, var_new_float64(vm, -(*(double*)v->value)));
 			break;
+		case V_BIGINT:
+			vm_push(vm, var_new_bigint(vm, bn_neg((bignum_t*)v->value)));
+			break;
 		default:
 			/* -"x" / -undefined etc.: JS yields NaN. Push it so the value stack
 			 * stays balanced (the old code pushed nothing for non-numerics). */
@@ -4035,6 +5167,10 @@ static inline void handle_pos(vm_t* vm, PC ins, opr_code_t instr, uint32_t offse
 		case V_FLOAT:
 		case V_FLOAT64:
 			vm_push(vm, var_new_float64(vm, var_get_float64(v)));
+			break;
+		case V_BIGINT:
+			/* Unary `+bigint` is a TypeError in JS: no implicit BigInt->Number. */
+			vm_throw_type(vm, "TypeError", "Cannot convert a BigInt value to a number");
 			break;
 		case V_BOOL:
 			vm_push(vm, var_new_int(vm, var_get_bool(v) ? 1 : 0));
@@ -4150,6 +5286,13 @@ static inline var_t* var_step(vm_t* vm, var_t* v, int step) {
 		case V_FLOAT:   return var_new_float(vm, *(float*)v->value + (float)step);
 		case V_FLOAT64: return var_new_float64(vm, *(double*)v->value + (double)step);
 		case V_INT64:   return box_int_result(vm, *(int64_t*)v->value + (int64_t)step);
+		case V_BIGINT: {
+			/* `x++` / `x--` on a BigInt stays a BigInt (step is +/-1). */
+			bignum_t* s = bn_from_int64(step);
+			bignum_t* r = bn_add((bignum_t*)v->value, s);
+			bn_free(s);
+			return var_new_bigint(vm, r);
+		}
 		default:        return box_int_result(vm, (int64_t)(*(int*)v->value) + (int64_t)step); // V_INT
 	}
 }
@@ -4171,8 +5314,15 @@ static inline void vm_step_op(vm_t* vm, PC ins, node_t* n, var_t* v, int step, b
 	var_ref(nv); //our own reference to nv, dropped at the end (as handle_asign() does).
 	var_t* res = prefix ? nv : v;
 	var_ref(res); //keep the result alive: node_replace() releases the node's old var.
-	if(n != NULL)
-		node_replace(n, nv); //write the new value back through the binding.
+	if(n != NULL) {
+		/* A synthetic @@taslot (`ta[i]++`): write the stepped value into the
+		 * buffer and free the sentinel; node_free releases the node's own ref on
+		 * the decoded element exactly as node_replace's var_unref(old) would. */
+		if(ta_slot_write(vm, n, nv))
+			node_free(n);
+		else
+			node_replace(n, nv); //write the new value back through the binding.
+	}
 
 	if((ins & INSTR_OPT_CACHE) == 0) {
 		if(OP(code[vm->pc]) != INSTR_POP) {
@@ -4398,6 +5548,18 @@ static inline void handle_str(vm_t* vm, PC ins, opr_code_t instr, uint32_t offse
 	vm_push(vm, v);
 }
 
+/* INSTR_BIGINT: the pooled string payload holds the literal's digits (with an
+ * optional 0x/0b/0o prefix); parse them into a bignum and push a V_BIGINT. Like
+ * handle_str, the literal is cache-eligible so a hot `1n` is not re-parsed. */
+static inline void handle_bigint(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
+	register PC* code = vm->bc.code_buf;
+	const char* s = bc_getstr(&vm->bc, offset);
+	bignum_t* b = bn_from_string(s, 0);
+	var_t* v = var_new_bigint(vm, b);
+	try_var_cache(vm, &code[vm->pc-1], v);
+	vm_push(vm, v);
+}
+
 static inline void handle_asign(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
 	register PC* code = vm->bc.code_buf;
 	var_t* v = vm_pop2(vm);
@@ -4410,6 +5572,31 @@ static inline void handle_asign(vm_t* vm, PC ins, opr_code_t instr, uint32_t off
 	vm->gc.gc_defer++;
 	if(n == NULL) {
 		mario_debug("Error: Can not find an assignable target!\n");
+		var_unref(v);
+		vm->gc.gc_defer--;
+		return;
+	}
+
+	/* Synthetic @@taslot target (`ta[i] = v`): encode v into the TypedArray's
+	 * buffer, free the sentinel, and yield v as the assignment expression's
+	 * value. vm_pop2node left the decoded element holding its stack reference, so
+	 * release it here (mirroring the var_unref(n->var) on the normal path);
+	 * node_free then releases the node's own reference and frees the sentinel. */
+	if(ta_slot_write(vm, n, v)) {
+		var_unref(n->var);
+		node_free(n);
+		if((ins & INSTR_OPT_CACHE) == 0) {
+			if(OP(code[vm->pc]) != INSTR_POP) {
+				vm_push(vm, v);
+			}
+			else {
+				code[vm->pc] = INSTR_NIL;
+				code[vm->pc-1] |= INSTR_OPT_CACHE;
+			}
+		}
+		else {
+			vm->pc++;
+		}
 		var_unref(v);
 		vm->gc.gc_defer--;
 		return;
@@ -5591,13 +6778,38 @@ static inline void handle_memberv(vm_t* vm, PC ins, opr_code_t instr, uint32_t o
 		mstr_free(ks);
 }
 
-static inline void handle_array_at(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
-	var_t* v2 = vm_pop2(vm);
-	var_t* v1 = vm_pop2(vm);
-	if(v1 == NULL || v2 == NULL) {
-		vm_push(vm, var_new(vm));
-		if(v1 != NULL) var_unref(v1);
-		if(v2 != NULL) var_unref(v2);
+/* Decode a subscript key into a TypedArray element index. Returns -1 (-> read
+ * yields undefined / write is ignored) for a non-canonical or fractional key. */
+static int64_t ta_key_index(var_t* v2) {
+	if(v2->type == V_STRING) {
+		const char* s = var_get_str(v2);
+		char* end = NULL;
+		int64_t idx = (s != NULL && *s != 0) ? (int64_t)strtoll(s, &end, 10) : -1;
+		if(end == NULL || *end != 0) return -1; /* non-canonical -> undefined */
+		return idx;
+	}
+	if(v2->type == V_FLOAT || v2->type == V_FLOAT64) {
+		double d = var_get_float64(v2);
+		return (d == floor(d) && !isinf(d)) ? (int64_t)d : -1;
+	}
+	return var_get_int64(v2);
+}
+
+/* Shared post-pop body of the subscript operators: v1 (receiver) and v2 (key)
+ * arrive owning their value-stack references and are released here. Pushes the
+ * element/member value or, for a persistent receiver, the binding node so a
+ * following assignment can write through it. */
+static void array_at_push(vm_t* vm, var_t* v1, var_t* v2) {
+	/* TypedArray indexed read: `ta[i]` (or canonical `ta["i"]`) decodes element i
+	 * straight from the shared buffer. The cheap `!is_array && var_is_typedarray`
+	 * guard is one hash miss for every plain object/array, so the hot path is a
+	 * genuine no-op for them. Symbol keys (e.g. @@iterator) fall through to the
+	 * normal member lookup below. OOB / non-canonical index -> undefined. */
+	if(!v1->is_array && var_is_typedarray(v1) && !var_is_symbol(v2)) {
+		var_t* el = var_typedarray_get_at(vm, v1, ta_key_index(v2));
+		vm_push(vm, (el != NULL) ? el : var_new(vm));
+		var_unref(v1);
+		var_unref(v2);
 		return;
 	}
 	node_t* n = NULL;
@@ -5649,6 +6861,59 @@ static inline void handle_array_at(vm_t* vm, PC ins, opr_code_t instr, uint32_t 
 	var_unref(v1);
 	var_unref(v2);
 }
+
+static inline void handle_array_at(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
+	var_t* v2 = vm_pop2(vm);
+	var_t* v1 = vm_pop2(vm);
+	if(v1 == NULL || v2 == NULL) {
+		vm_push(vm, var_new(vm));
+		if(v1 != NULL) var_unref(v1);
+		if(v2 != NULL) var_unref(v2);
+		return;
+	}
+	array_at_push(vm, v1, v2);
+}
+
+/* Subscript as an assignment target (`ta[i] = ..`, `ta[i] += ..`, `ta[i]++`).
+ * For a TypedArray receiver push a SYNTHETIC @@taslot node: a magic=1 node whose
+ * ->var is the decoded current element (so a compound op / ++ reads it) carrying
+ * a hidden @@ta member (the ref'd TypedArray) and whose ncache_instr is the
+ * index. handle_asign / math_result / vm_step_op recognise the sentinel, encode
+ * the new value straight into the shared buffer, and free the node. For every
+ * other receiver this is exactly handle_array_at (normal arrays already yield a
+ * writable binding node), so the compiler retarget is type-agnostic. */
+static inline void handle_array_at_w(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
+	var_t* v2 = vm_pop2(vm);
+	var_t* v1 = vm_pop2(vm);
+	if(v1 == NULL || v2 == NULL) {
+		vm_push(vm, var_new(vm));
+		if(v1 != NULL) var_unref(v1);
+		if(v2 != NULL) var_unref(v2);
+		return;
+	}
+	if(!v1->is_array && var_is_typedarray(v1) && !var_is_symbol(v2)) {
+		int64_t idx = ta_key_index(v2);
+		vm->gc.gc_defer++;   /* sn/cur are unrooted until vm_push_node below */
+		node_t* sn = (node_t*)mario_malloc(sizeof(node_t));
+		memset(sn, 0, sizeof(node_t));
+		sn->magic = 1;
+		sn->name = (char*)mario_malloc(strlen(TA_SLOT)+1);
+		memcpy(sn->name, TA_SLOT, strlen(TA_SLOT)+1);
+		var_t* cur = var_typedarray_get_at(vm, v1, idx);
+		if(cur == NULL) cur = var_new(vm);
+		sn->var = var_ref(cur);                    /* node's own reference */
+		node_t* tn = var_add(cur, TA_SLOT_TA, v1); /* hidden back-ref (var_add refs v1) */
+		tn->invisable = 1; tn->be_unenumerable = 1;
+		sn->ncache_instr = (uint32_t)(int32_t)idx;
+		vm_push_node(vm, sn);                      /* adds the stack reference to cur */
+		vm->gc.gc_defer--;
+		var_unref(v1);   /* balance pop2; the @@ta member keeps the TA alive */
+		var_unref(v2);
+		return;
+	}
+	array_at_push(vm, v1, v2);
+}
+
 
 /* `obj[key]` used as a call target `obj[key](...)`: resolve the member but keep
  * the receiver on the stack (beneath the member value) so INSTR_CALLXO can bind
@@ -5747,6 +7012,99 @@ static inline void handle_typeof(vm_t* vm, PC ins, opr_code_t instr, uint32_t of
 	vm_push(vm, v);
 }
 
+/* `delete o.x` (INSTR_DELETE $name): the object is on the stack; remove its own
+ * member $name and push the boolean result. The compiler retargets the operand's
+ * final INSTR_GET here (see unary()), so it keeps GET's pop-1/push-1 arity. */
+static inline void handle_delete(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
+	const char* s = bc_getstr(&vm->bc, offset);
+	var_t* obj = vm_pop2(vm);
+	vm->gc.gc_defer++; //obj is a bare C pointer across the member teardown (see handle_instof)
+	bool res = var_delete_own_member(obj, s);
+	if(obj != NULL) var_unref(obj);
+	vm_push(vm, var_new_bool(vm, res));
+	vm->gc.gc_defer--;
+}
+
+/* `delete o[k]` (INSTR_DELETE_AT): the key is on top of the object. Retargeted
+ * from the operand's final INSTR_ARRAY_AT; keeps its pop-2/push-1 arity. */
+static inline void handle_delete_at(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
+	var_t* key = vm_pop2(vm);
+	var_t* obj = vm_pop2(vm);
+	vm->gc.gc_defer++;
+	bool res = true;
+	if(obj != NULL && key != NULL) {
+		if(var_is_symbol(key)) {
+			res = var_delete_own_member(obj, var_symbol_key(key));
+		}
+		else if(key->type == V_STRING) {
+			res = var_delete_own_member(obj, var_get_str(key));
+		}
+		else {
+			/* Numeric/other key: mirrors handle_array_at and is treated as an
+			 * index. Array elements live in the nested _ARRAY_ store; a plain
+			 * object keeps the decimal-keyed member directly on itself. */
+			var_t* cont = obj->is_array ? var_find_own_member_var(obj, "_ARRAY_") : obj;
+			if(cont != NULL) {
+				char k[32];
+				snprintf(k, sizeof(k), "%d", var_get_int(key));
+				res = var_delete_own_member(cont, k);
+			}
+		}
+	}
+	if(key != NULL) var_unref(key);
+	if(obj != NULL) var_unref(obj);
+	vm_push(vm, var_new_bool(vm, res));
+	vm->gc.gc_defer--;
+}
+
+/* `delete x` (INSTR_DELETE_VAR $name): a bare identifier. Only a global (an own
+ * property of the root object) is deletable; a resolved local/lexical binding is
+ * non-configurable and yields false; an unresolvable name yields true (JS
+ * non-strict). Retargeted from the operand's INSTR_LOAD; keeps its push-1 arity. */
+static inline void handle_delete_var(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
+	const char* s = bc_getstr(&vm->bc, offset);
+	bool res;
+	node_t* node = vm_find_in_scopes(vm, s);
+	if(node == NULL) {
+		res = true;                        //unresolvable reference: delete yields true
+	}
+	else if(var_find_own_member(vm->root, s) != NULL) {
+		var_delete_own_member(vm->root, s);
+		res = true;                        //deleted a global own property
+	}
+	else {
+		res = false;                       //local / lexical binding: not deletable
+	}
+	vm_push(vm, var_new_bool(vm, res));
+}
+
+/* `key in obj` (INSTR_IN): the object (RHS) sits on top of the key (LHS). Push
+ * whether the key is present on obj's own or prototype chain. */
+static inline void handle_in(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
+	var_t* obj = vm_pop2(vm);
+	var_t* key = vm_pop2(vm);
+	vm->gc.gc_defer++;
+	bool res = false;
+	if(obj != NULL && key != NULL) {
+		if(var_is_symbol(key)) {
+			const char* sk = var_symbol_key(key);
+			if(sk != NULL) res = var_has_member(obj, sk);
+		}
+		else if(key->type == V_STRING) {
+			res = var_has_member(obj, var_get_str(key));
+		}
+		else {
+			char k[32];
+			snprintf(k, sizeof(k), "%d", var_get_int(key));
+			res = var_has_member(obj, k);
+		}
+	}
+	if(key != NULL) var_unref(key);
+	if(obj != NULL) var_unref(obj);
+	vm_push(vm, var_new_bool(vm, res));
+	vm->gc.gc_defer--;
+}
+
 static inline void handle_include(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
 	var_t* v = vm_pop2(vm);
 	if(v == NULL) {
@@ -5813,7 +7171,9 @@ static void init_instr_table(void) {
 	instr_table[INSTR_INT64] = handle_int64;
 	instr_table[INSTR_FLOAT64] = handle_float64;
 	instr_table[INSTR_STR] = handle_str;
+	instr_table[INSTR_BIGINT] = handle_bigint;
 	instr_table[INSTR_ARRAY_AT] = handle_array_at;
+	instr_table[INSTR_ARRAY_AT_W] = handle_array_at_w;
 	instr_table[INSTR_ARRAY_AT_M] = handle_array_at_m;
 	instr_table[INSTR_ARRAY] = handle_obj;
 	instr_table[INSTR_ARRAY_END] = handle_obj_end;
@@ -5926,6 +7286,10 @@ static void init_instr_table(void) {
 	instr_table[INSTR_THROW] = handle_throw;
 	instr_table[INSTR_CATCH] = handle_catch;
 	instr_table[INSTR_INSTOF] = handle_instof;
+	instr_table[INSTR_DELETE] = handle_delete;
+	instr_table[INSTR_DELETE_AT] = handle_delete_at;
+	instr_table[INSTR_DELETE_VAR] = handle_delete_var;
+	instr_table[INSTR_IN] = handle_in;
 
 	instr_table[INSTR_YIELD] = handle_yield;
 	instr_table[INSTR_YIELD_STAR] = handle_yield;
