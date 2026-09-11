@@ -45,6 +45,10 @@ bool        is_alpha_num(const char* cstr);
 
 void        lex_get_nextch(lex_t* lex);
 void        lex_reset(lex_t* lex);
+/* Read a `\u`/`\u{...}` escape inside a string literal (entry: curr_ch=='u');
+ * emits UTF-8, combining UTF-16 surrogate pairs. Shared by the single- and
+ * double-quote string lexers. */
+void        lex_read_u_escape(lex_t* lex);
 void        lex_init(lex_t * lex, const char* input);
 void        lex_release(lex_t* lex);
 void        lex_skip_whitespace(lex_t* lex);

@@ -160,6 +160,88 @@ void lex_get_char_token(lex_t* lex) {
 		lex_get_nextch(lex);
 }
 
+/* Value of a single hex digit, or -1 if not a hex digit. */
+static int lex_hexval(char c) {
+	if(c >= '0' && c <= '9') return c - '0';
+	if(c >= 'a' && c <= 'f') return c - 'a' + 10;
+	if(c >= 'A' && c <= 'F') return c - 'A' + 10;
+	return -1;
+}
+
+/* Append the UTF-8 encoding of a Unicode code point to str (mario stores string
+ * values as UTF-8). Astral code points (>0xFFFF) become 4 bytes. */
+static void lex_add_codepoint(mstr_t* str, uint32_t cp) {
+	if(cp < 0x80) {
+		mstr_add(str, (char)cp);
+	} else if(cp < 0x800) {
+		mstr_add(str, (char)(0xC0 | (cp >> 6)));
+		mstr_add(str, (char)(0x80 | (cp & 0x3F)));
+	} else if(cp < 0x10000) {
+		mstr_add(str, (char)(0xE0 | (cp >> 12)));
+		mstr_add(str, (char)(0x80 | ((cp >> 6) & 0x3F)));
+		mstr_add(str, (char)(0x80 | (cp & 0x3F)));
+	} else {
+		mstr_add(str, (char)(0xF0 | (cp >> 18)));
+		mstr_add(str, (char)(0x80 | ((cp >> 12) & 0x3F)));
+		mstr_add(str, (char)(0x80 | ((cp >> 6) & 0x3F)));
+		mstr_add(str, (char)(0x80 | (cp & 0x3F)));
+	}
+}
+
+/* Read a `\u` escape inside a string literal. On entry lex->curr_ch == 'u'.
+ * Supports both `\uXXXX` (exactly 4 hex digits) and ES6 `\u{X...}` (braced code
+ * point). A UTF-16 surrogate pair written as `\uD83D\uDE00` is combined into the
+ * single astral code point U+1F600 so it is byte-identical to `\u{1F600}`.
+ * On return lex->curr_ch is the LAST character consumed, matching the string
+ * lexers' convention that the caller performs one trailing lex_get_nextch(). */
+void lex_read_u_escape(lex_t* lex) {
+	uint32_t cp = 0;
+	lex_get_nextch(lex); /* step past 'u' */
+	if(lex->curr_ch == '{') {
+		lex_get_nextch(lex); /* first hex digit (or '}') */
+		while(lex_hexval(lex->curr_ch) >= 0) {
+			cp = cp * 16 + (uint32_t)lex_hexval(lex->curr_ch);
+			lex_get_nextch(lex);
+		}
+		/* curr_ch is now '}' (first non-hex); leave it for the caller to skip. */
+		if(cp > 0x10FFFF) cp = 0xFFFD; /* out-of-range -> replacement char */
+		lex_add_codepoint(lex->tk_str, cp);
+		return;
+	}
+	/* Exactly 4 hex digits; leave curr_ch on the 4th digit. */
+	int n = 0;
+	while(n < 4 && lex_hexval(lex->curr_ch) >= 0) {
+		cp = cp * 16 + (uint32_t)lex_hexval(lex->curr_ch);
+		n++;
+		if(n < 4) lex_get_nextch(lex);
+	}
+	/* If this is a high surrogate, try to combine with a following \uDC00-\uDFFF. */
+	if(cp >= 0xD800 && cp <= 0xDBFF) {
+		int32_t sp = lex->data_pos; char sc = lex->curr_ch, sn = lex->next_ch;
+		lex_get_nextch(lex); /* expect '\\' */
+		if(lex->curr_ch == '\\') {
+			lex_get_nextch(lex); /* expect 'u' */
+			if(lex->curr_ch == 'u') {
+				lex_get_nextch(lex); /* first hex digit of the low surrogate */
+				uint32_t lo = 0; int m = 0;
+				while(m < 4 && lex_hexval(lex->curr_ch) >= 0) {
+					lo = lo * 16 + (uint32_t)lex_hexval(lex->curr_ch);
+					m++;
+					if(m < 4) lex_get_nextch(lex);
+				}
+				if(m == 4 && lo >= 0xDC00 && lo <= 0xDFFF) {
+					cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00);
+					lex_add_codepoint(lex->tk_str, cp);
+					return; /* curr_ch is the low surrogate's 4th digit */
+				}
+			}
+		}
+		/* Not a valid pair: rewind to just after the high surrogate. */
+		lex->data_pos = sp; lex->curr_ch = sc; lex->next_ch = sn;
+	}
+	lex_add_codepoint(lex->tk_str, cp);
+}
+
 void lex_get_basic_token(lex_t* lex) {
 	// tokens
 	if (is_alpha(lex->curr_ch)) { //  IDs
@@ -235,6 +317,7 @@ void lex_get_basic_token(lex_t* lex) {
 					case 't' : mstr_add(lex->tk_str, '\t'); break;
 					case '"' : mstr_add(lex->tk_str, '\"'); break;
 					case '\\' : mstr_add(lex->tk_str, '\\'); break;
+					case 'u' : lex_read_u_escape(lex); break;
 					default: mstr_add(lex->tk_str, lex->curr_ch);
 				}
 			} else {

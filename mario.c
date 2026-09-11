@@ -677,11 +677,24 @@ PC bc_gen_str(bytecode_t* bc, opr_code_t instr, const char* str) {
 	const char* s = str;
 
 	if(instr == INSTR_INT) {
-		if(strstr(str, "0x") != NULL ||
-				strstr(str, "0x") != NULL)
+		if(strstr(str, "0x") != NULL) {
+			/* Hex literals keep their uint32 bit pattern so bit masks such as
+			 * 0xFFFFFFFF still wrap to the intended int32 value. */
 			i = (uint32_t)strtoul(str, NULL, 16);
-		else
-			i = (uint32_t)strtol(str, NULL, 10);
+		}
+		else {
+			/* A decimal integer too large for int32 must not be silently
+			 * truncated (9007199254740991 -> -1). JS has no int32 literal type,
+			 * so promote it to a float, matching how it is represented at
+			 * runtime and keeping Number.MAX_SAFE_INTEGER self-consistent. */
+			long long ll = strtoll(str, NULL, 10);
+			if(ll < -2147483648LL || ll > 2147483647LL) {
+				instr = INSTR_FLOAT;
+				f = (float)(double)ll;
+			}
+			else
+				i = (uint32_t)(int)ll;
+		}
 		s = NULL;
 	}
 	else if(instr == INSTR_FLOAT) {
@@ -899,7 +912,7 @@ static var_t* var_clone(var_t* v) {
 		case V_INT:
 			return var_new_int(v->vm, var_get_int(v));
 		case V_FLOAT:
-			return var_new_float(v->vm, var_get_int(v));
+			return var_new_float(v->vm, var_get_float(v));
 		case V_STRING:
 			return var_new_str(v->vm, var_get_str(v));
 		/*case V_BOOL:
@@ -1279,7 +1292,17 @@ static bool func_set_closure(var_t* var, var_t* closure, func_t* closure_func) {
 	 * already binds the lexical scope, so the legacy return-time path must not
 	 * add a second reference / extra refs-- to the same closure. */
 	if(func != NULL && func->closure.var == NULL) {
-		var->refs--;
+		/* Capture the defining scope; do NOT touch `var`'s own refcount. This
+		 * mirrors propagate_closure_cb (object-method path). The old `var->refs--`
+		 * assumed a returned function always carries an extra scope-node ref, but
+		 * an inline `return function(){...}` / `return () => ...` is held only by
+		 * the value stack (refs==1 after handle_return's push/unref). Dropping that
+		 * lone ref underflowed the uint32_t count (func_call's `ret->refs--` then
+		 * wrapped it to ~4e9 and finally left the var at refs==0 on the caller's
+		 * stack), so the `const f = g()` store freed and recycled it into a string
+		 * (typeof f === "string"). Capturing without the decrement keeps the
+		 * stack's ref intact; unreachable over-retained vars are still collected
+		 * by the reachability-based gc. */
 		func->closure.var = var_ref(closure);
 		func->closure.func = closure_func;
 		return true;
@@ -1387,7 +1410,6 @@ void var_free(void* p) {
 		return;
 
 	vm_t* vm = var->vm;
-	uint32_t status = var->status; //store status of variable
 
 	if(var->is_func) {
 		func_t* func = var_get_func(var);
@@ -1410,12 +1432,23 @@ void var_free(void* p) {
 		}
 	}
 
-	//clean var.
+	//clean var. var_clean() preserves next/prev across its memset.
 	var_clean(var);
 	var->type = V_UNDEF;
 	var->vm = vm;
 
-	if(status == V_ST_GC) { //if in gc_vars list
+	/* Decide gc-list membership from the var's ACTUAL list pointers, never from a
+	 * status snapshot taken before the closure teardown above. Releasing the closure
+	 * re-enters the object graph and can var_ref()/var_unref() this very var,
+	 * flipping it between the gc_vars list and the referenced set; a stale snapshot
+	 * then makes us either remove_from_gc() a var that is no longer linked (which
+	 * wipes gc_vars head/tail) or add_to_free() a var that IS still linked (leaving
+	 * a dangling node the next gc_vars walk dereferences -> heap-use-after-free).
+	 * var_clean() kept next/prev, so the true linkage is readable right here. */
+	bool in_gc = (var->prev != NULL || var->next != NULL ||
+		vm->gc.gc_vars == var || vm->gc.gc_vars_tail == var);
+
+	if(in_gc) { //still linked in the gc_vars list
 		if(vm->gc.is_doing_gc) { // if is doing gc, change status to GC_FREE for moving to free_var_buffer list later.
 			var->status = V_ST_GC_FREE;
 		}
@@ -1424,7 +1457,7 @@ void var_free(void* p) {
 			add_to_free(var);
 		}
 	}
-	else if(status != V_ST_FREE) {
+	else {
 		add_to_free(var);
 	}
 }
@@ -1552,7 +1585,9 @@ static const char* get_typeof(var_t* var) {
 		case V_STRING: 
 			return "string";
 		case V_NULL: 
-			return "null";
+			/* Historic JS quirk: typeof null === "object" (a bug preserved for
+			 * backwards compatibility since the very first JS engine). */
+			return "object";
 		case V_OBJECT: 
 			if(var_is_symbol(var))
 				return "symbol";
@@ -2305,6 +2340,14 @@ node_t* vm_find_in_class(var_t* var, const char* name) {
 }
 
 bool var_instanceof(var_t* var, var_t* proto) {
+	/* `instanceof` only applies to objects. A primitive (number, string, boolean,
+	 * null, undefined) is never an instance of anything, even though mario gives
+	 * primitives a builtin prototype so methods like (1).toFixed / "x".charAt can
+	 * be dispatched. Without this guard `1 instanceof Number` wrongly walked into
+	 * Number.prototype and returned true. */
+	if(var == NULL || var->type != V_OBJECT)
+		return false;
+
 	var_t* v = var_get_prototype(proto);
 	if(v != NULL)
 		proto = v;
@@ -3160,13 +3203,43 @@ static void merge_accessor(node_t* ex, var_t* acc) {
 		node_replace(ex, primary); //refs primary, releases the node's old var.
 }
 
+/* JS string .length counts UTF-16 code units. mario stores string values as
+ * UTF-8, so decode each code point and count 2 for astral ones (>0xFFFF, i.e. a
+ * surrogate pair in UTF-16) and 1 otherwise. Pure ASCII counts 1 per byte, so
+ * this matches the old strlen() behaviour for the common case. */
+static int mstr_utf16_length(const char* s) {
+	if(s == NULL)
+		return 0;
+	const unsigned char* p = (const unsigned char*)s;
+	int units = 0;
+	while(*p != 0) {
+		unsigned char c = *p;
+		uint32_t cp;
+		if(c < 0x80) { cp = c; p += 1; }
+		else if((c >> 5) == 0x6 && p[1] != 0) {
+			cp = (uint32_t)(c & 0x1F) << 6 | (uint32_t)(p[1] & 0x3F); p += 2;
+		}
+		else if((c >> 4) == 0xE && p[1] != 0 && p[2] != 0) {
+			cp = (uint32_t)(c & 0x0F) << 12 | (uint32_t)(p[1] & 0x3F) << 6 |
+					(uint32_t)(p[2] & 0x3F); p += 3;
+		}
+		else if((c >> 3) == 0x1E && p[1] != 0 && p[2] != 0 && p[3] != 0) {
+			cp = (uint32_t)(c & 0x07) << 18 | (uint32_t)(p[1] & 0x3F) << 12 |
+					(uint32_t)(p[2] & 0x3F) << 6 | (uint32_t)(p[3] & 0x3F); p += 4;
+		}
+		else { cp = c; p += 1; } /* stray/invalid byte: count as one unit */
+		units += (cp > 0xFFFF) ? 2 : 1;
+	}
+	return units;
+}
+
 /* Member fetch. When `for_write` is set the access is an assignment target: an
  * accessor property pushes the object (for the setter's `this`) followed by the
  * node so handle_asign can invoke the setter; a read invokes the getter and
  * pushes its result. */
 void do_get(vm_t* vm, var_t* v, const char* name, bool for_write) {
 	if(v->type == V_STRING && strcmp(name, "length") == 0) {
-		int len = (int)strlen(var_get_str(v));
+		int len = mstr_utf16_length(var_get_str(v));
 		vm_push(vm, var_new_int(vm, len));
 		return;
 	}
@@ -3329,12 +3402,18 @@ static bool do_new(vm_t* vm, const char* full) {
 var_t* call_m_func(vm_t* vm, var_t* obj, var_t* func, var_t* args) {
 	//push args to stack.
 	int arg_num = 0;
+	/* `args` (and any hole-filler we create) is held only by this C frame while
+	 * the callee runs, so an opportunistic gc in the callee (vm_pop_scope) would
+	 * sweep it and the caller's var_unref(args) would become a UAF. Defer gc for
+	 * the whole call instead of anchoring args on the value stack: the old
+	 * vm_push/vm_pop anchor churned args->refs, and when a caller passed an args
+	 * array whose only live reference was the one it was about to release
+	 * (refs==0 on entry, e.g. handle_call_spread), the anchor pop freed args and
+	 * the caller's later var_unref(args) read freed memory. gc_defer protects
+	 * args without touching its refcount, leaving exactly one release (the
+	 * caller's). The elements still go on the value stack for func_call. */
+	vm->gc.gc_defer++;
 	if(args != NULL) {
-		/* Only this C frame holds the args container; once its elements are on
-		 * the stack the container itself is unreachable, so a gc during the
-		 * callee (vm_pop_scope) would sweep it and the caller's var_unref(args)
-		 * becomes a UAF. Anchor it on the value stack for the call. */
-		vm_push(vm, args);
 		// Push arguments onto the stack
 		arg_num = var_array_size(args);
 		for(int i = arg_num - 1; i >= 0; i--) {
@@ -3349,10 +3428,9 @@ var_t* call_m_func(vm_t* vm, var_t* obj, var_t* func, var_t* args) {
 	while(vm->gc.is_doing_gc);
 	func_call(vm, obj, func, arg_num);
 	var_t* ret = vm_pop2(vm);
-	if(obj == ret)
+	if(ret != NULL && obj == ret)
 		ret->refs--;
-	if(args != NULL)
-		vm_pop(vm); //drop the args anchor
+	vm->gc.gc_defer--;
 	return ret;
 }
 
@@ -3613,8 +3691,12 @@ static inline void handle_neg(vm_t* vm, PC ins, opr_code_t instr, uint32_t offse
 	var_t* v = vm_pop2(vm);
 	if(v->type == V_INT) {
 		int n = *(int*)v->value;
-		n = -n;
-		vm_push(vm, var_new_int(vm, n));
+		/* -0 must be a distinct negative zero (Object.is(0,-0) === false), which
+		 * int32 cannot represent. Negating integer 0 yields float -0.0. */
+		if(n == 0)
+			vm_push(vm, var_new_float(vm, -0.0f));
+		else
+			vm_push(vm, var_new_int(vm, -n));
 	}
 	else if(v->type == V_FLOAT) {
 		float n = *(float*)v->value;
@@ -4290,7 +4372,16 @@ static inline void handle_member(vm_t* vm, PC ins, opr_code_t instr, uint32_t of
 				return;
 			}
 		}
-		var_add(var, s, v);
+		node_t* n = var_add(var, s, v);
+		/* ES6: methods defined in a class body live on the prototype (or on the
+		 * constructor for statics) and are non-enumerable, unlike object-literal
+		 * members. A class-body scope is identified by class_var (set in
+		 * handle_class); object literals (handle_obj) leave it NULL. */
+		if(n != NULL && v->is_func) {
+			scope_t* sc = vm_get_scope(vm);
+			if(sc != NULL && sc->class_var != NULL)
+				n->be_unenumerable = 1;
+		}
 	}
 	var_unref(v);
 }
