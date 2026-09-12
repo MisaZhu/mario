@@ -381,6 +381,8 @@ extern const char* _mario_lang;
 #define EXOTIC_TYPEDARRAY  "ta"     // TypedArray view over a buffer
 #define EXOTIC_DATAVIEW    "dv"     // DataView over a buffer
 #define EXOTIC_PROXY       "proxy"  // Proxy(target, handler)
+#define EXOTIC_WEAKREF     "wr"     // WeakRef(target): weak observation via deref()
+#define EXOTIC_FR          "fr"     // FinalizationRegistry: post-collection cleanup callbacks
 
 /* TypedArray element-type codes (hidden @@etype member, a V_INT). One code per
  * concrete view; the element-access primitives in mario.c (var_typedarray_get_at
@@ -418,7 +420,15 @@ extern const char* _mario_lang;
 #define PROXY_SLOT_KEY   "@@pkey"      // hidden member on the @@proxyslot node's var: the key var
 #define OBJ_NO_EXT       "@@noext"     // hidden own member (V_BOOL true): preventExtensions applied
 
+/* WeakRef / FinalizationRegistry (Phase 6). A WeakRef holds its target's raw
+ * pointer in var->value (NEVER ref'd, so the target stays collectable) with a
+ * no-op free_func; value==NULL means the reference has been cleared. A
+ * FinalizationRegistry keeps its cleanup callback as a hidden ref'd own member,
+ * and each registration copies a reference into its C-side cell. */
+#define FR_CALLBACK      "@@frcb"      // hidden own member: the ref'd cleanup callback
+
 struct st_vm;
+struct st_weak_cell;   // Phase 6 weak-reference / finalization cell (defined in mario.c)
 
 typedef struct st_var {
 	uint32_t            magic: 8; //0 for var; 1 for node
@@ -506,6 +516,7 @@ typedef struct st_scope {
 	var_t* class_var; // for a class-definition scope: the constructor var (pushed by CLASS_END so class expressions evaluate to the class)
 	PC pc_start; // continue anchor for loop
 	PC pc; // try cache anchor , or break anchor for loop
+	int32_t stack_top; // value-stack height at scope entry; a runtime throw truncates leaked operands back to the innermost func frame's height (see vm_throw_truncate)
 	uint32_t is_func: 8;
 	uint32_t is_block: 8;
 	uint32_t is_try: 8;
@@ -587,6 +598,15 @@ typedef struct st_vm {
 		var_t*          gc_vars_tail;
 		uint32_t        gc_vars_num;
 	} gc;
+
+	/* Phase 6: weak references & finalization. Cells live in these C-side lists,
+	 * NOT the var graph: var_clean() consults weak_cells when a target dies (clear
+	 * WeakRefs, queue finalizers) and gc_mark_weak() shields the held value +
+	 * callback a pending finalizer still needs. All zero for a program that never
+	 * uses WeakRef/FinalizationRegistry, so the common path costs one pointer test. */
+	struct st_weak_cell* weak_cells;
+	struct st_weak_cell* pending_finalizers;
+	bool                 finalizers_draining; // re-entrancy guard for vm_drain_finalizers
 
 	var_t*              free_var_buffer;
 	uint32_t            free_var_buffer_num;
@@ -783,6 +803,18 @@ node_t*     vm_reg_native_on(vm_t* vm, var_t* target, const char* decl, native_f
 void        vm_mark_func_scopes(vm_t* vm, var_t* func);
 void        vm_reg_init(vm_t* vm, void (*func)(void*), void* data);
 void        vm_reg_close(vm_t* vm, void (*func)(void*), void* data);
+
+/* Phase 6: weak references & finalization registry (defined in mario.c). A
+ * WeakRef observes a target without keeping it alive; a FinalizationRegistry
+ * queues a cleanup callback for when a target is collected. The natives in
+ * native_WeakRef.c / native_FinalizationRegistry.c drive these; var_clean() and
+ * gc_vars() consult the registry internally. */
+void        vm_weak_add_ref(vm_t* vm, var_t* target, var_t* weakref);
+void        vm_weak_remove_ref(vm_t* vm, var_t* weakref);
+void        vm_weak_add_finalizer(vm_t* vm, var_t* registry, var_t* target, var_t* callback, var_t* held, var_t* token);
+bool        vm_weak_unregister(vm_t* vm, var_t* registry, var_t* token);
+void        vm_weak_remove_registry(vm_t* vm, var_t* registry);
+void        vm_gc_collect(vm_t* vm); // forced full gc + drain pending finalizers (backs the hidden gc() global)
 
 var_t*      get_obj(var_t* obj, const char* name);
 void*       get_raw(var_t* obj, const char* name);

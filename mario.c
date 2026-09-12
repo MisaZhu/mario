@@ -2226,6 +2226,11 @@ void var_array_del(var_t* var, int32_t index) {
 	}
 }
 
+/* Phase 6 weak-reference machinery (defined further down, after gc()). Forward
+ * declared here because var_clean() and gc_vars() both consult it. */
+static void vm_weak_target_dying(vm_t* vm, var_t* target);
+static void gc_mark_weak(vm_t* vm, bool mark);
+
 inline void var_clean(var_t* var) {
 	if(var_empty(var))
 		return;
@@ -2238,6 +2243,16 @@ inline void var_clean(var_t* var) {
 	if(var->on_destroy != NULL) {
 		var->on_destroy(var);
 	}
+
+	/* Phase 6: this var is being torn down. If it is the target of any WeakRef,
+	 * clear those references (so deref() now returns undefined) and move any
+	 * FinalizationRegistry cell observing it onto the pending queue, to be drained
+	 * by the hidden gc() global at a safe point. Gated on a non-empty registry so a
+	 * program without weak references pays a single pointer test per teardown. The
+	 * target's identity is matched by pointer, which stays valid until var_free()
+	 * recycles this var into the free pool AFTER var_clean() returns. */
+	if(vm != NULL && vm->weak_cells != NULL)
+		vm_weak_target_dying(vm, var);
 
 	/*free children*/
 	var_remove_all(var);	
@@ -2547,6 +2562,11 @@ static inline void gc_vars(vm_t* vm) {
 	gc_mark(vm->builtin_vars.var_true, true);
 	gc_mark(vm->builtin_vars.var_false, true);
 	gc_mark(vm->builtin_vars.var_null, true);
+	/* Phase 6: a FinalizationRegistry cell's held value + callback are referenced
+	 * only by the C-side cell (not reachable from any JS root), so mark them here or
+	 * the sweep below would collect them out from under a pending finalizer. The
+	 * weak TARGET is deliberately not marked - that is what makes it collectable. */
+	gc_mark_weak(vm, true);
 
 	//mario_debug("free all unmarked var\n");
 	var_t* v = vm->gc.gc_vars;
@@ -2571,6 +2591,10 @@ static inline void gc_vars(vm_t* vm) {
 	gc_mark(vm->builtin_vars.var_true, false);
 	gc_mark(vm->builtin_vars.var_false, false);
 	gc_mark(vm->builtin_vars.var_null, false);
+	/* Phase 6: unmark the finalizer held values. The sweep above may have moved
+	 * cells from weak_cells to pending_finalizers (their targets died), so
+	 * gc_mark_weak() walks both lists in both phases to keep marking symmetric. */
+	gc_mark_weak(vm, false);
 
 	//second step: move freed var to free_var_list for reusing.
 	v = vm->gc.gc_vars;
@@ -2610,6 +2634,285 @@ static inline void gc(vm_t* vm, bool force) {
 	gc_free_free_vars(vm, force ? 0:vm->gc.free_var_buffer_num);
 	vm->gc.is_doing_gc = false;
 	mario_debug("done.\n");
+}
+
+/* ====== Phase 6: weak references & finalization registry ======
+ * A WeakRef observes a target object without keeping it alive; a
+ * FinalizationRegistry schedules a cleanup callback to run after a target is
+ * collected. Both are tracked as C-side cells keyed by the target's var pointer
+ * (a cell NEVER refs the target - that is what makes the reference weak).
+ *
+ * Lifetime contract:
+ *  - var_clean() calls vm_weak_target_dying() as a target is torn down: WeakRef
+ *    cells clear their observer (value = NULL, so deref() -> undefined) and are
+ *    freed; FinalizationRegistry cells move to pending_finalizers, keeping their
+ *    ref'd held value + callback alive for the drain.
+ *  - gc_mark_weak() marks those held values + callbacks during a collection so
+ *    the sweep does not reclaim them (they are reachable only from C cells, which
+ *    are not gc roots). It never marks the target.
+ *  - vm_gc_collect() (the hidden gc() global) runs a forced collection then
+ *    drains the pending callbacks. Draining runs JS via call_m_func(), which
+ *    spins while is_doing_gc, so it MUST happen after gc() returns, never inside
+ *    the sweep.
+ *
+ * Cells are matched by target pointer. That is safe because var_clean() clears /
+ * re-queues a target's cells before var_free() recycles the var into the free
+ * pool, so a pointer is never reused while a stale cell still references it. A
+ * WeakRef removes its own cell via on_destroy when the WeakRef dies, and a
+ * registry removes its cells the same way, so no cell outlives the observer it
+ * would otherwise write through. */
+typedef struct st_weak_cell {
+	struct st_weak_cell* next;
+	var_t*   target;    // observed var; matched by pointer, NEVER ref'd
+	var_t*   weakref;   // WeakRef cell: the observing WeakRef var (value cleared on target death)
+	var_t*   registry;  // FR cell: the owning FinalizationRegistry (raw ptr, scopes unregister)
+	var_t*   callback;  // FR cell: ref'd cleanup function
+	var_t*   held;      // FR cell: ref'd value handed to the callback
+	var_t*   token;     // FR cell: unregister token (raw ptr, matched by identity); may be NULL
+	bool     is_fr;     // true = FinalizationRegistry cell, false = WeakRef cell
+} weak_cell_t;
+
+static weak_cell_t* weak_cell_new(var_t* target, bool is_fr) {
+	weak_cell_t* c = (weak_cell_t*)mario_malloc(sizeof(weak_cell_t));
+	memset(c, 0, sizeof(weak_cell_t));
+	c->target = target;
+	c->is_fr = is_fr;
+	return c;
+}
+
+/* Release a cell's owned references (an FR cell holds the held value + callback)
+ * and free it. Never touches the target - a cell does not own it. */
+static void weak_cell_free(weak_cell_t* c) {
+	if(c == NULL)
+		return;
+	if(c->is_fr) {
+		if(c->held != NULL)
+			var_unref(c->held);
+		if(c->callback != NULL)
+			var_unref(c->callback);
+	}
+	mario_free(c);
+}
+
+/* Unlink one known cell from a singly-linked list head. */
+static void weak_list_remove(weak_cell_t** head, weak_cell_t* c) {
+	weak_cell_t** pp = head;
+	while(*pp != NULL) {
+		if(*pp == c) {
+			*pp = c->next;
+			c->next = NULL;
+			return;
+		}
+		pp = &(*pp)->next;
+	}
+}
+
+void vm_weak_add_ref(vm_t* vm, var_t* target, var_t* weakref) {
+	if(vm == NULL || target == NULL || weakref == NULL)
+		return;
+	weak_cell_t* c = weak_cell_new(target, false);
+	c->weakref = weakref;
+	c->next = vm->weak_cells;
+	vm->weak_cells = c;
+}
+
+/* Drop every WeakRef cell observing `weakref` (called from the WeakRef's
+ * on_destroy, so a later death of the target never writes through a freed
+ * WeakRef). A WeakRef cell owns no references, so removal cannot re-enter. */
+void vm_weak_remove_ref(vm_t* vm, var_t* weakref) {
+	if(vm == NULL || weakref == NULL)
+		return;
+	weak_cell_t** pp = &vm->weak_cells;
+	while(*pp != NULL) {
+		weak_cell_t* c = *pp;
+		if(!c->is_fr && c->weakref == weakref) {
+			*pp = c->next;
+			c->next = NULL;
+			weak_cell_free(c);
+		}
+		else {
+			pp = &c->next;
+		}
+	}
+}
+
+void vm_weak_add_finalizer(vm_t* vm, var_t* registry, var_t* target, var_t* callback, var_t* held, var_t* token) {
+	if(vm == NULL || target == NULL || callback == NULL)
+		return;
+	weak_cell_t* c = weak_cell_new(target, true);
+	c->registry = registry;                 // raw ptr: only compared against a live registry
+	c->callback = var_ref(callback);        // keep the cleanup alive until it runs
+	c->held = (held != NULL) ? var_ref(held) : NULL;
+	c->token = token;                       // raw ptr, matched by identity on unregister
+	c->next = vm->weak_cells;
+	vm->weak_cells = c;
+}
+
+/* unregister(token): drop this registry's cells whose token matches by identity.
+ * Returns true if at least one registration was removed (spec-shaped). */
+bool vm_weak_unregister(vm_t* vm, var_t* registry, var_t* token) {
+	if(vm == NULL || token == NULL)
+		return false;
+	/* Unlink every match first, then release: weak_cell_free() unrefs the held
+	 * value + callback, and a held value dropping to zero re-enters var_clean() ->
+	 * vm_weak_target_dying(), which mutates weak_cells. Freeing off-list keeps that
+	 * re-entrancy away from the walk. */
+	weak_cell_t* doomed = NULL;
+	weak_cell_t** pp = &vm->weak_cells;
+	while(*pp != NULL) {
+		weak_cell_t* c = *pp;
+		if(c->is_fr && c->registry == registry && c->token == token) {
+			*pp = c->next;
+			c->next = doomed;
+			doomed = c;
+		}
+		else {
+			pp = &c->next;
+		}
+	}
+	bool removed = (doomed != NULL);
+	while(doomed != NULL) {
+		weak_cell_t* n = doomed->next;
+		doomed->next = NULL;
+		weak_cell_free(doomed);
+		doomed = n;
+	}
+	return removed;
+}
+
+/* A registry being collected releases all of its registrations (called from the
+ * FinalizationRegistry's on_destroy). */
+void vm_weak_remove_registry(vm_t* vm, var_t* registry) {
+	if(vm == NULL || registry == NULL)
+		return;
+	weak_cell_t* doomed = NULL;   // unlink-then-free: see vm_weak_unregister
+	weak_cell_t** pp = &vm->weak_cells;
+	while(*pp != NULL) {
+		weak_cell_t* c = *pp;
+		if(c->is_fr && c->registry == registry) {
+			*pp = c->next;
+			c->next = doomed;
+			doomed = c;
+		}
+		else {
+			pp = &c->next;
+		}
+	}
+	while(doomed != NULL) {
+		weak_cell_t* n = doomed->next;
+		doomed->next = NULL;
+		weak_cell_free(doomed);
+		doomed = n;
+	}
+}
+
+/* var_clean() hook: the target is dying. Clear WeakRefs observing it and move FR
+ * cells to the pending queue. Runs with no JS and no allocation, so it is safe
+ * both inside a gc sweep and during an ordinary refcount-to-zero free. */
+static void vm_weak_target_dying(vm_t* vm, var_t* target) {
+	weak_cell_t** pp = &vm->weak_cells;
+	while(*pp != NULL) {
+		weak_cell_t* c = *pp;
+		if(c->target != target) {
+			pp = &c->next;
+			continue;
+		}
+		*pp = c->next;   // unlink from the live registry
+		if(c->is_fr) {
+			c->next = vm->pending_finalizers;   // keep held + callback for the drain
+			vm->pending_finalizers = c;
+		}
+		else {
+			if(c->weakref != NULL)
+				c->weakref->value = NULL;        // cleared: deref() now returns undefined
+			c->next = NULL;
+			weak_cell_free(c);                   // a WeakRef cell owns no refs
+		}
+	}
+}
+
+/* gc_vars() hook: shield the values a registered/pending finalizer still needs.
+ * Walks both lists because a sweep moves cells from weak_cells to
+ * pending_finalizers between the mark and unmark passes. */
+static void gc_mark_weak(vm_t* vm, bool mark) {
+	weak_cell_t* c;
+	for(c = vm->weak_cells; c != NULL; c = c->next) {
+		if(c->is_fr) {
+			if(c->held != NULL) gc_mark(c->held, mark);
+			if(c->callback != NULL) gc_mark(c->callback, mark);
+		}
+	}
+	for(c = vm->pending_finalizers; c != NULL; c = c->next) {
+		if(c->held != NULL) gc_mark(c->held, mark);
+		if(c->callback != NULL) gc_mark(c->callback, mark);
+	}
+}
+
+/* Run the queued cleanup callbacks. Called only from vm_gc_collect() AFTER
+ * gc(vm,true) has returned, so is_doing_gc is false and call_m_func() (which
+ * spins on it) is safe. A cell stays linked in pending_finalizers while its own
+ * callback runs, so a nested forced collection still marks its held value +
+ * callback; it is unlinked afterwards (a nested finalizer may have pushed new
+ * cells ahead of it). finalizers_draining guards against a callback that calls
+ * gc() re-entering the drain and double-firing. */
+static void vm_drain_finalizers(vm_t* vm) {
+	if(vm->pending_finalizers == NULL || vm->finalizers_draining)
+		return;
+	vm->finalizers_draining = true;
+	vm->gc.gc_defer++;   // args + cells are unrooted C locals across each callback
+	while(vm->pending_finalizers != NULL) {
+		weak_cell_t* c = vm->pending_finalizers;   // leave linked: gc_mark_weak shields it
+		if(c->callback != NULL) {
+			var_t* args = var_new_array(vm);
+			var_array_add(args, (c->held != NULL) ? c->held : var_new(vm));
+			var_array_reverse(args);   // call_m_func expects the last arg at index 0
+			var_t* res = call_m_func(vm, NULL, c->callback, args);
+			if(res != NULL)
+				var_unref(res);
+			var_unref(args);
+		}
+		weak_list_remove(&vm->pending_finalizers, c);
+		weak_cell_free(c);
+	}
+	vm->gc.gc_defer--;
+	vm->finalizers_draining = false;
+}
+
+/* The hidden gc() global: force a full collection (which clears dead WeakRefs and
+ * queues finalizers) and then drain the queue at this safe point. */
+void vm_gc_collect(vm_t* vm) {
+	if(vm == NULL)
+		return;
+	gc(vm, true);
+	vm_drain_finalizers(vm);
+}
+
+/* vm_close() hook: release every remaining cell without running callbacks (the VM
+ * is shutting down). Frees the FR held values + callbacks so teardown stays clean
+ * under a leak checker. */
+static void weak_registry_free(vm_t* vm) {
+	/* Detach both lists up front so a held value dropping to zero during a
+	 * weak_cell_free() re-enters var_clean() -> vm_weak_target_dying() against an
+	 * empty registry (the var_clean gate tests vm->weak_cells != NULL) instead of
+	 * walking the list we are still freeing. */
+	weak_cell_t* cells = vm->weak_cells;
+	weak_cell_t* pending = vm->pending_finalizers;
+	vm->weak_cells = NULL;
+	vm->pending_finalizers = NULL;
+	weak_cell_t* c = cells;
+	while(c != NULL) {
+		weak_cell_t* n = c->next;
+		c->next = NULL;
+		weak_cell_free(c);
+		c = n;
+	}
+	c = pending;
+	while(c != NULL) {
+		weak_cell_t* n = c->next;
+		c->next = NULL;
+		weak_cell_free(c);
+		c = n;
+	}
 }
 
 static const char* get_typeof(var_t* var) {
@@ -3615,6 +3918,35 @@ static inline scope_t* vm_get_try_catch_scope(vm_t* vm) {
 	return NULL;
 }
 
+/* A runtime throw abandons the interrupted expression, but its transient
+ * value-stack entries stay put: e.g. `let x = <expr>` pushes the binding node
+ * (INSTR_LOAD) before <expr> is evaluated, so a throw inside <expr> leaves that
+ * node on the value stack. The unwind then frees the scope that owns the node
+ * (scope_free -> var_free -> var_remove_all), and a later func_call vm_pop2() /
+ * vm_pop() dereferences the freed node -> heap-use-after-free / SIGSEGV. It also
+ * leaks ~2 slots per caught throw, overflowing VM_STACK_MAX after ~14 throws.
+ * Drop every entry above the innermost function frame's entry baseline except
+ * the thrown value on top (which handle_catch() pops). This mirrors the native
+ * throw path, where func_call pops its env before unwinding, so the suspended
+ * func_call frames still find their own env intact. */
+static void vm_throw_truncate(vm_t* vm) {
+	if(vm->stack_top <= 0)
+		return;
+	scope_t* sc = vm_get_scope(vm);
+	while(sc != NULL && !sc->is_func)
+		sc = sc->prev;
+	int32_t base = (sc != NULL) ? sc->stack_top : 0;
+	if(base < 0)
+		base = 0;
+	if(vm->stack_top <= base + 1)
+		return; // only the thrown value (or nothing) sits above the frame baseline
+	void* err = vm->stack[vm->stack_top - 1]; // the thrown value, held aside (its ref is untouched)
+	vm->stack_top--;
+	while(vm->stack_top > base)
+		vm_pop(vm); // unref each leaked operand/binding while its owning scope is still alive
+	vm->stack[vm->stack_top++] = err; // re-seat the thrown value on top
+}
+
 static inline scope_t* vm_get_strict_scope(vm_t* vm) {
 	scope_t* sc = vm_get_scope(vm);
 	while(sc != NULL) {
@@ -3654,6 +3986,7 @@ void vm_throw(vm_t* vm, const char *format, ...) {
 		return;
 	}
 
+	vm_throw_truncate(vm); // drop operands the interrupted expression leaked (keep err on top)
 	while(true) {
 		scope_t* sc = vm_get_scope(vm);
 		if(sc == NULL) {
@@ -3753,6 +4086,7 @@ void vm_throw_type(vm_t* vm, const char* type_name, const char* format, ...) {
 		vm_pop(vm);
 		return;
 	}
+	vm_throw_truncate(vm); // drop operands the interrupted expression leaked (keep err on top)
 	while(true) {
 		scope_t* sc = vm_get_scope(vm);
 		if(sc == NULL) {
@@ -4023,6 +4357,7 @@ static bool func_call(vm_t* vm, var_t* obj, var_t* func_var, int arg_num) {
 		sc->pc = vm->pc;
 		sc->is_func = true;
 		sc->func = func;
+		sc->stack_top = vm->stack_top; //frame baseline (env already pushed): a throw truncates leaked operands down to here
 
 		vm_push_scope(vm, sc);
 
@@ -4052,6 +4387,7 @@ static bool func_call(vm_t* vm, var_t* obj, var_t* func_var, int arg_num) {
 		vm->gc.gc_defer++;
 		vm_push(vm, err);
 		var_unref(err); //the stack ref keeps it alive now
+		vm_throw_truncate(vm); //drop operands the caller's interrupted expression leaked (e.g. `let x = nativeCall()`)
 		while(true) { //same unwinding as handle_throw
 			scope_t* sc = vm_get_scope(vm);
 			if(sc == NULL) {
@@ -5141,6 +5477,7 @@ static inline void handle_strict(vm_t* vm, PC ins, opr_code_t instr, uint32_t of
 static inline void handle_block(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
 	scope_t* sc = scope_new(var_new_block(vm));
 	sc->is_block = true;
+	sc->stack_top = vm->stack_top; //entry height (a block nests inside its func frame's baseline)
 	if(instr == INSTR_LOOP) {
 		sc->is_loop = true;
 		sc->pc_start = vm->pc+1;
@@ -6543,6 +6880,7 @@ static var_t* gen_resume_body(vm_t* vm, gen_state_t* g, var_t* sent, int mode) {
 		sc->pc = caller_pc; //stale after this resume; every exit path below restores pc itself
 		sc->is_func = true;
 		sc->func = g->func;
+		sc->stack_top = vm->stack_top; //frame baseline for throw truncation
 		vm_push_scope(vm, sc);
 		vm->pc = g->func->pc;
 		//the value sent to the very first next() is discarded per spec: no push
@@ -8011,6 +8349,7 @@ static inline void handle_include(vm_t* vm, PC ins, opr_code_t instr, uint32_t o
 
 
 static inline void handle_throw(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
+	vm_throw_truncate(vm); // the thrown value is on top; drop operands the interrupted expression leaked
 	while(true) {
 		scope_t* sc = vm_get_scope(vm);
 		if(sc == NULL) {
@@ -8299,6 +8638,7 @@ void vm_close(vm_t* vm) {
 	bc_release(&vm->bc);
 	vm->stack_top = 0;
 
+	weak_registry_free(vm); // Phase 6: release weak cells (unref held/callback) before the final sweep
 	gc(vm, true);
 	mario_free(vm);
 }	
