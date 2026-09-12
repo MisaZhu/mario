@@ -244,13 +244,13 @@ void lex_read_u_escape(lex_t* lex) {
 
 void lex_get_basic_token(lex_t* lex) {
 	// tokens
-	if (is_alpha(lex->curr_ch)) { //  IDs
-		while (is_alpha(lex->curr_ch) || is_numeric(lex->curr_ch)) {
+	if (is_alpha(lex->curr_ch) || lex->curr_ch == '$') { //  IDs (JS allows '$' in identifiers, e.g. jQuery's $)
+		while (is_alpha(lex->curr_ch) || is_numeric(lex->curr_ch) || lex->curr_ch == '$') {
 			mstr_add(lex->tk_str, lex->curr_ch);
 			lex_get_nextch(lex);
 		}
 		lex->tk = LEX_ID;
-	} else if (is_numeric(lex->curr_ch)) { // _numbers
+	} else if (is_numeric(lex->curr_ch) || (lex->curr_ch=='.' && is_numeric(lex->next_ch))) { // _numbers (incl. leading-dot floats like `.5`, common in minified JS)
 		bool isHex = false;
 		if (lex->curr_ch=='0') {
 			mstr_add(lex->tk_str, lex->curr_ch);

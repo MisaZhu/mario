@@ -311,6 +311,17 @@ typedef struct st_bytecode {
 #define INSTR_DELETE_AT    0x07A // DELETE_AT     : pop key, pop obj, delete own member [key], push bool  (`delete o[k]`)
 #define INSTR_DELETE_VAR   0x07B // DELETE_VAR $n : delete the global binding $n, push bool  (`delete x`)
 #define INSTR_ARRAY_AT_W   0x07C // ARRAT_W : subscript as an assignment target; pops key + receiver, pushes a synthetic @@taslot node carrying the TypedArray + index (compiled from `ta[i] = ..` / `ta[i] += ..`)
+#define INSTR_SWITCH       0x07D // SWITCH : push a switch scope (break anchor); pairs with INSTR_SWITCH_END
+#define INSTR_SWITCH_END   0x07E // SWITCH_END : pop the switch scope
+#define INSTR_BNOT         0x07F // BNOT : unary bitwise NOT `~x` (ToInt32 then invert; BigInt -> -(x+1))
+#define INSTR_BITANDEQ     0x080 // BITANDEQ  : `&=`  bitwise-AND assignment (read-modify-write via the lvalue node)
+#define INSTR_BITOREQ      0x081 // BITOREQ   : `|=`  bitwise-OR assignment
+#define INSTR_BITXOREQ     0x082 // BITXOREQ  : `^=`  bitwise-XOR assignment
+#define INSTR_LSHIFTEQ     0x083 // LSHIFTEQ  : `<<=` left-shift assignment
+#define INSTR_RSHIFTEQ     0x084 // RSHIFTEQ  : `>>=` signed-right-shift assignment
+#define INSTR_URSHIFTEQ    0x085 // URSHIFTEQ : `>>>=` unsigned-right-shift assignment
+#define INSTR_SCOR         0x086 // SCOR  : short-circuit `||` (LHS truthy -> keep LHS, jump past RHS; else pop LHS, eval RHS)
+#define INSTR_SCAND        0x087 // SCAND : short-circuit `&&` (LHS falsy  -> keep LHS, jump past RHS; else pop LHS, eval RHS)
 
 #define INSTR_MAX          0x090 // Maximum instruction opcode value
 
@@ -521,6 +532,7 @@ typedef struct st_scope {
 	uint32_t is_block: 8;
 	uint32_t is_try: 8;
 	uint32_t is_loop: 4;
+	uint32_t is_switch: 4; // switch scope: a `break` stops here, a `continue` does not (it belongs to an enclosing loop)
 	uint32_t is_strict: 4;
 	func_t*  func;
 	struct st_scope* prev;
@@ -540,6 +552,17 @@ typedef struct st_vm {
 	PC                  pc;
 
 	bool                terminated;
+	/* Instruction-level service hook: vm_run() calls on_step every
+	 * step_interval dispatched instructions (0 = disabled; vm_new zeroes it).
+	 * The embedder uses it as a page-independent cadence to pump UI events and
+	 * enforce a wall-clock run budget: set terminated=true inside the hook to
+	 * unwind every nested vm_run frame, then call vm_terminate() and clear
+	 * terminated once the run has fully returned. The hook must not compile or
+	 * load code (the bytecode buffer may not grow mid-run). */
+	uint32_t            step_interval;
+	uint32_t            step_count;
+	void                (*on_step)(struct st_vm* vm, void* data);
+	void*               on_step_data;
 	/* ES6 generator suspension: handle_yield sets yielded + yield_value and the
 	 * running vm_run() returns; gen_resume() (the generator's next()) consumes
 	 * them. yield_delegate carries the iterator of an in-progress `yield*`.

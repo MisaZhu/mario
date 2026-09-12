@@ -3728,6 +3728,7 @@ static scope_t* scope_new(var_t* var) {
 	sc->is_func = false;
 	sc->is_try = false;
 	sc->is_loop = false;
+	sc->is_switch = false;
 	return sc;
 }
 
@@ -3995,6 +3996,7 @@ void vm_throw(vm_t* vm, const char *format, ...) {
 		}
 
 		if(sc->is_try) {
+			sc->is_try = false; //consume: a throw inside this catch must not re-trigger the same handler (infinite loop)
 			vm->pc = sc->pc;
 			break;
 		}
@@ -4396,6 +4398,7 @@ static bool func_call(vm_t* vm, var_t* obj, var_t* func_var, int arg_num) {
 				break;
 			}
 			if(sc->is_try) {
+				sc->is_try = false; //consume: a throw inside this catch must not re-trigger the same handler (infinite loop)
 				vm->pc = sc->pc;
 				break;
 			}
@@ -4443,6 +4446,12 @@ static inline bool is_compound_assign(opr_code_t op) {
 		case INSTR_DIVEQ:
 		case INSTR_MODEQ:
 		case INSTR_POWEQ:
+		case INSTR_BITANDEQ:
+		case INSTR_BITOREQ:
+		case INSTR_BITXOREQ:
+		case INSTR_LSHIFTEQ:
+		case INSTR_RSHIFTEQ:
+		case INSTR_URSHIFTEQ:
 			return true;
 		default:
 			return false;
@@ -4629,10 +4638,10 @@ static inline void math_op(vm_t* vm, opr_code_t op, var_t* v1, var_t* v2, node_t
 	 * mix of BigInt with another type is a TypeError except `+` with a string or
 	 * object, which concatenates. `>>>` is meaningless for BigInt (TypeError).
 	 * Division/modulo by zero, a negative exponent, or a negative shift count are
-	 * RangeError. (Bitwise compound assigns like `&=` are desugared by the
-	 * compiler into a plain op + store, so only the base opcodes appear here.) */
+	 * RangeError. (Bitwise compound assigns like `&=` have their own opcodes and
+	 * ride the same lanes; math_result() writes back through the lvalue node.) */
 	if(v1->type == V_BIGINT || v2->type == V_BIGINT) {
-		if(op == INSTR_URSHIFT) {
+		if(op == INSTR_URSHIFT || op == INSTR_URSHIFTEQ) {
 			vm_throw_type(vm, "TypeError", "BigInts have no unsigned right shift");
 			return;
 		}
@@ -4653,13 +4662,13 @@ static inline void math_op(vm_t* vm, opr_code_t op, var_t* v1, var_t* v2, node_t
 				case INSTR_POW:    case INSTR_POWEQ:
 					if(y->sign < 0) { vm_throw_type(vm, "RangeError", "BigInt negative exponent"); return; }
 					r = bn_pow(x, y); break;
-				case INSTR_AND:    r = bn_and(x, y); break;
-				case INSTR_OR:     r = bn_or(x, y); break;
-				case INSTR_XOR:    r = bn_xor(x, y); break;
-				case INSTR_LSHIFT:
+				case INSTR_AND:    case INSTR_BITANDEQ:  r = bn_and(x, y); break;
+				case INSTR_OR:     case INSTR_BITOREQ:   r = bn_or(x, y); break;
+				case INSTR_XOR:    case INSTR_BITXOREQ:  r = bn_xor(x, y); break;
+				case INSTR_LSHIFT: case INSTR_LSHIFTEQ:
 					if(y->sign < 0) { vm_throw_type(vm, "RangeError", "Negative shift count"); return; }
 					r = bn_shl(x, (uint32_t)bn_to_int64(y)); break;
-				case INSTR_RSHIFT:
+				case INSTR_RSHIFT: case INSTR_RSHIFTEQ:
 					if(y->sign < 0) { vm_throw_type(vm, "RangeError", "Negative shift count"); return; }
 					r = bn_shr(x, (uint32_t)bn_to_int64(y)); break;
 				default:
@@ -4710,19 +4719,23 @@ static inline void math_op(vm_t* vm, opr_code_t op, var_t* v1, var_t* v2, node_t
 
 	//Bitwise ops use JS ToInt32/ToUint32 semantics: the result is a 32-bit
 	//integer regardless of operand width, so they never promote to int64/double.
+	//The `op=` compound forms share the same computation; math_result() writes the
+	//result back through the lvalue node because is_compound_assign() is true.
 	if((op == INSTR_AND || op == INSTR_OR || op == INSTR_XOR ||
-	    op == INSTR_LSHIFT || op == INSTR_RSHIFT || op == INSTR_URSHIFT) &&
+	    op == INSTR_LSHIFT || op == INSTR_RSHIFT || op == INSTR_URSHIFT ||
+	    op == INSTR_BITANDEQ || op == INSTR_BITOREQ || op == INSTR_BITXOREQ ||
+	    op == INSTR_LSHIFTEQ || op == INSTR_RSHIFTEQ || op == INSTR_URSHIFTEQ) &&
 	   c1 != NC_NONE && c2 != NC_NONE) {
 		int32_t a = to_int32(v1);
 		int32_t b = to_int32(v2);
 		int32_t sh = b & 31;
 		switch(op) {
-			case INSTR_AND:     math_result(vm, op, n, var_new_int(vm, a & b)); return;
-			case INSTR_OR:      math_result(vm, op, n, var_new_int(vm, a | b)); return;
-			case INSTR_XOR:     math_result(vm, op, n, var_new_int(vm, a ^ b)); return;
-			case INSTR_LSHIFT:  math_result(vm, op, n, var_new_int(vm, a << sh)); return;
-			case INSTR_RSHIFT:  math_result(vm, op, n, var_new_int(vm, a >> sh)); return;
-			case INSTR_URSHIFT: {
+			case INSTR_AND:     case INSTR_BITANDEQ: math_result(vm, op, n, var_new_int(vm, a & b)); return;
+			case INSTR_OR:      case INSTR_BITOREQ:  math_result(vm, op, n, var_new_int(vm, a | b)); return;
+			case INSTR_XOR:     case INSTR_BITXOREQ: math_result(vm, op, n, var_new_int(vm, a ^ b)); return;
+			case INSTR_LSHIFT:  case INSTR_LSHIFTEQ: math_result(vm, op, n, var_new_int(vm, a << sh)); return;
+			case INSTR_RSHIFT:  case INSTR_RSHIFTEQ: math_result(vm, op, n, var_new_int(vm, a >> sh)); return;
+			case INSTR_URSHIFT: case INSTR_URSHIFTEQ: {
 				uint32_t ur = ((uint32_t)a) >> sh; // unsigned: 0..2^32-1
 				math_result(vm, op, n, box_int_result(vm, (int64_t)ur));
 				return;
@@ -5221,12 +5234,27 @@ var_t* new_obj(vm_t* vm, const char* name, int arg_num) {
 }
 
 static int parse_func_name(const char* full, mstr_t* name) {
-	const char* pos = strchr(full, '$');
+	/* gen_func_name() encodes a call as "<name>$<argcount>" (suffix present only
+	 * when argcount>0). JS identifiers may themselves contain '$' (e.g. jQuery's
+	 * `$`, or `$el`/`a$b`), so splitting at the FIRST '$' corrupts them: "$" would
+	 * yield an empty name and "$(sel)"->"$$1" would too. The arity suffix is
+	 * always a trailing '$' followed by one or more digits and nothing else, so
+	 * split at the LAST such '$'; any other '$' belongs to the identifier. */
 	int args_num = 0;
-	if(pos != NULL) {
-		args_num = atoi(pos+1);
+	const char* sep = NULL;
+	for(const char* p = full; *p != 0; ++p) {
+		if(*p != '$' || *(p+1) == 0)
+			continue;
+		const char* q = p+1;
+		while(*q >= '0' && *q <= '9')
+			q++;
+		if(*q == 0)   // '$' followed by only digits up to end -> arity suffix
+			sep = p;
+	}
+	if(sep != NULL) {
+		args_num = atoi(sep+1);
 		if(name != NULL)
-			mstr_ncpy(name, full, (uint32_t)(pos-full));	
+			mstr_ncpy(name, full, (uint32_t)(sep-full));
 	}
 	else {
 		if(name != NULL)
@@ -5487,6 +5515,13 @@ static inline void handle_block(vm_t* vm, PC ins, opr_code_t instr, uint32_t off
 		sc->is_try = true;
 		sc->pc = vm->pc+1;
 	}
+	else if(instr == INSTR_SWITCH) {
+		/* Switch scope: sc->pc is the break anchor (a reserved JMP-to-end slot the
+		 * compiler emits right after SWITCH). `break` jumps here; `continue` must
+		 * NOT stop here (it belongs to an enclosing loop), hence a distinct flag. */
+		sc->is_switch = true;
+		sc->pc = vm->pc+1;
+	}
 	vm_push_scope(vm, sc);
 }
 
@@ -5502,7 +5537,7 @@ static inline void handle_break(vm_t* vm, PC ins, opr_code_t instr, uint32_t off
 			vm_terminate(vm);
 			break;
 		}
-		if(sc->is_loop) {
+		if(sc->is_loop || sc->is_switch) {
 			vm->pc = sc->pc;
 			break;
 		}
@@ -5600,6 +5635,60 @@ static inline void handle_neg(vm_t* vm, PC ins, opr_code_t instr, uint32_t offse
 			break;
 	}
 	var_unref(v);
+}
+
+/* Bitwise NOT `~x`: ToInt32(x) then invert. A BigInt operand yields -(x+1)
+ * (still a BigInt). Non-numeric operands coerce like JS ToNumber: bool/null ->
+ * 0/1, a numeric string -> its value, anything else (undefined, object, junk
+ * string) -> NaN, and ToInt32(NaN) == 0, so ~NaN == -1. */
+static inline void handle_bnot(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
+	var_t* v = vm_pop2(vm);
+	if(v == NULL) {
+		vm_push(vm, var_new_int(vm, -1)); // ~undefined == ~0 == -1
+		return;
+	}
+	if(v->type == V_BIGINT) {
+		bignum_t* one = bn_from_int64(1);
+		bignum_t* s = bn_add((bignum_t*)v->value, one); // x + 1
+		bn_free(one);
+		bignum_t* r = bn_neg(s);                        // -(x + 1)
+		bn_free(s);
+		var_unref(v);
+		vm_push(vm, var_new_bigint(vm, r));
+		return;
+	}
+	double d;
+	switch(v->type) {
+		case V_INT:     d = (double)(*(int*)v->value); break;
+		case V_INT64:   d = (double)(*(int64_t*)v->value); break;
+		case V_FLOAT:   d = (double)(*(float*)v->value); break;
+		case V_FLOAT64: d = *(double*)v->value; break;
+		case V_BOOL:    d = var_get_bool(v) ? 1.0 : 0.0; break;
+		case V_NULL:    d = 0.0; break;
+		case V_STRING: {
+			const char* s = var_get_str(v);
+			while(s != NULL && (*s == ' ' || *s == '\t' || *s == '\n' || *s == '\r')) s++;
+			char* end = NULL;
+			d = (s != NULL && *s != 0) ? strtod(s, &end) : 0.0;
+			if(end != NULL) {
+				while(*end == ' ' || *end == '\t' || *end == '\n' || *end == '\r') end++;
+				if(*end != 0) d = NAN; // trailing junk -> NaN
+			}
+			break;
+		}
+		default:        d = NAN; break; // V_UNDEF, V_OBJECT
+	}
+	int32_t a;
+	if(isnan(d) || isinf(d)) {
+		a = 0;
+	} else {
+		double m = fmod(trunc(d), 4294967296.0);
+		int64_t i = (int64_t)m;
+		if(i < 0) i += 4294967296LL;
+		a = (int32_t)(uint32_t)i;
+	}
+	var_unref(v);
+	vm_push(vm, var_new_int(vm, ~a));
 }
 
 /* Box a double as the narrowest exact numeric var: a whole number within the
@@ -6288,6 +6377,21 @@ static inline void handle_nullish(vm_t* vm, PC ins, opr_code_t instr, uint32_t o
 	}
 }
 
+/* Short-circuit `&&` / `||`. Mirrors handle_nullish(): the LHS is already on the
+ * stack. If it decides the result (`||` truthy / `&&` falsy) keep it and jump
+ * past the RHS; otherwise pop it and fall through to evaluate the RHS, whose
+ * value becomes the result. Unlike the old INSTR_AAND/INSTR_OOR path this never
+ * evaluates the RHS unnecessarily, so guards like `el && el.x` are safe. */
+static inline void handle_logic_sc(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
+	var_t* top = vm_peek_var(vm);
+	bool truthy = var_truthy(top);
+	if((instr == INSTR_SCOR && truthy) || (instr == INSTR_SCAND && !truthy)) {
+		vm->pc = vm->pc + offset - 1; // keep LHS, skip RHS
+	} else {
+		vm_pop(vm); // drop LHS, evaluate RHS next
+	}
+}
+
 /* ES2021 logical assignment `||= &&= ??=`. Mirrors the arithmetic compound
  * assignment path (handle_math/math_result): the RHS is on top, the lvalue
  * binding beneath it. Pick the result per the operator, install it through the
@@ -6896,6 +7000,7 @@ static var_t* gen_resume_body(vm_t* vm, gen_state_t* g, var_t* sent, int mode) {
 			while(vm->scope_stack_top > scope_base) {
 				scope_t* sc = vm_get_scope(vm);
 				if(sc != NULL && sc->is_try) {
+					sc->is_try = false; //consume: a re-throw inside this catch must not loop back to the same handler
 					vm->pc = sc->pc;
 					caught = true;
 					break;
@@ -8358,6 +8463,11 @@ static inline void handle_throw(vm_t* vm, PC ins, opr_code_t instr, uint32_t off
 			break;
 		}
 		if(sc->is_try) {
+			/* Consume this try: the catch handler is entered now, so a throw raised
+			 * from within its own catch body must NOT re-match the same scope (the
+			 * scope lives until INSTR_TRY_END, after the catch body). Without this
+			 * the second throw jumps back to the same catch forever -> hang. */
+			sc->is_try = false;
 			vm->pc = sc->pc;
 			break;
 		}
@@ -8437,6 +8547,7 @@ static void init_instr_table(void) {
 	instr_table[INSTR_MINUS] = handle_math;
 	instr_table[INSTR_NEG] = handle_neg;
 	instr_table[INSTR_POS] = handle_pos;
+	instr_table[INSTR_BNOT] = handle_bnot;
 	instr_table[INSTR_PPLUS] = handle_pplus;
 	instr_table[INSTR_MMINUS] = handle_mminus;
 	instr_table[INSTR_PPLUS_PRE] = handle_pplus_pre;
@@ -8462,6 +8573,12 @@ static void init_instr_table(void) {
 	instr_table[INSTR_OR] = handle_math;
 	instr_table[INSTR_XOR] = handle_math;
 	instr_table[INSTR_URSHIFT] = handle_math;
+	instr_table[INSTR_BITANDEQ] = handle_math;
+	instr_table[INSTR_BITOREQ] = handle_math;
+	instr_table[INSTR_BITXOREQ] = handle_math;
+	instr_table[INSTR_LSHIFTEQ] = handle_math;
+	instr_table[INSTR_RSHIFTEQ] = handle_math;
+	instr_table[INSTR_URSHIFTEQ] = handle_math;
 
 	instr_table[INSTR_TEQ] = handle_compare;
 	instr_table[INSTR_NTEQ] = handle_compare;
@@ -8506,6 +8623,8 @@ static void init_instr_table(void) {
 	instr_table[INSTR_POWEQ] = handle_math;
 	instr_table[INSTR_OPT_GET] = handle_opt_get;
 	instr_table[INSTR_NULLISH] = handle_nullish;
+	instr_table[INSTR_SCOR] = handle_logic_sc;
+	instr_table[INSTR_SCAND] = handle_logic_sc;
 	instr_table[INSTR_OREQ] = handle_logic_assign;
 	instr_table[INSTR_ANDEQ] = handle_logic_assign;
 	instr_table[INSTR_NULLISHEQ] = handle_logic_assign;
@@ -8516,6 +8635,8 @@ static void init_instr_table(void) {
 	instr_table[INSTR_LOOP_END] = handle_block_end;
 	instr_table[INSTR_TRY] = handle_block;
 	instr_table[INSTR_TRY_END] = handle_block_end;
+	instr_table[INSTR_SWITCH] = handle_block;
+	instr_table[INSTR_SWITCH_END] = handle_block_end;
 
 	instr_table[INSTR_THROW] = handle_throw;
 	instr_table[INSTR_CATCH] = handle_catch;
@@ -8553,6 +8674,15 @@ bool vm_run(vm_t* vm) {
 
 		/* Table-based instruction dispatch */
 		instr_table[instr](vm, ins, instr, offset);
+
+		/* Page-independent service cadence (see mario.h): one increment+compare
+		 * per dispatch when armed, nothing when step_interval is 0. The hook may
+		 * set vm->terminated to abort the whole nested run. */
+		if(vm->step_interval != 0 && ++vm->step_count >= vm->step_interval) {
+			vm->step_count = 0;
+			if(vm->on_step != NULL)
+				vm->on_step(vm, vm->on_step_data);
+		}
 
 		/* Handle return instructions */
 		if(instr == INSTR_RETURN || instr == INSTR_RETURNV) {
@@ -8621,6 +8751,11 @@ void vm_close(vm_t* vm) {
 	var_unref(vm->builtin_vars.var_true);
 	var_unref(vm->builtin_vars.var_false);
 	var_unref(vm->builtin_vars.var_null);
+	/* freed above; NULL them so the final gc() below never marks
+	 * through freed memory. */
+	vm->builtin_vars.var_true = NULL;
+	vm->builtin_vars.var_false = NULL;
+	vm->builtin_vars.var_null = NULL;
 
 	var_cache_free(vm);
 	load_ncache_free(vm);
@@ -8635,6 +8770,7 @@ void vm_close(vm_t* vm) {
 	array_clean(&vm->included, (free_func_t)mstr_free);	
 
 	var_unref(vm->root);
+	vm->root = NULL;
 	bc_release(&vm->bc);
 	vm->stack_top = 0;
 

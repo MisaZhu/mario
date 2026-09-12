@@ -51,6 +51,15 @@ static const char* inmstr_str(opr_code_t ins) {
 		case INSTR_PLUS         : return "PLUS";
 		case INSTR_MINUS        : return "MINUS";
 		case INSTR_NEG          : return "NEG";
+		case INSTR_BNOT         : return "BNOT";
+				case INSTR_BITANDEQ     : return "BITANDEQ";
+				case INSTR_BITOREQ      : return "BITOREQ";
+				case INSTR_BITXOREQ     : return "BITXOREQ";
+				case INSTR_LSHIFTEQ     : return "LSHIFTEQ";
+				case INSTR_RSHIFTEQ     : return "RSHIFTEQ";
+		case INSTR_URSHIFTEQ    : return "URSHIFTEQ";
+		case INSTR_SCOR         : return "SCOR";
+		case INSTR_SCAND        : return "SCAND";
 		case INSTR_PPLUS        : return "PPLUS";
 		case INSTR_MMINUS       : return "MMINUS";
 		case INSTR_PPLUS_PRE    : return "PPLUSP";
