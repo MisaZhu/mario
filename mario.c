@@ -2304,7 +2304,7 @@ static inline void add_to_gc(var_t* var) {
 	 * the re-entrant gc's gc_free_free_vars() would mario_free() vars that pending
 	 * node_free() calls in the same teardown still dereference (node->var->vm),
 	 * causing a use-after-free. Defer it to the next add_to_gc outside a teardown. */
-	if(vm->gc.gc_vars_num > GC_TRIG_VAR_NUM_DEF && vm->gc.gc_defer == 0)
+	if(vm->gc.gc_vars_num > vm->gc.gc_trig_var_num && vm->gc.gc_defer == 0)
 		gc(vm, false);
 }
 
@@ -2633,6 +2633,18 @@ static inline void gc(vm_t* vm, bool force) {
 	gc_vars(vm);
 	gc_free_free_vars(vm, force ? 0:vm->gc.free_var_buffer_num);
 	vm->gc.is_doing_gc = false;
+	/* Adaptive trigger: gc_vars_num is now the surviving live count. Require the
+	 * heap to grow ~1.5x past it before the next opportunistic collection, so
+	 * building a large all-live structure (a big array/object literal such as
+	 * w3.org's inline membersData) costs amortized O(n) instead of re-marking
+	 * the whole heap on every allocation past the fixed floor - the O(n^2) that
+	 * froze the engine for seconds. The floor keeps small heaps collecting
+	 * promptly, and a collection that frees a lot shrinks the trigger back. */
+	{
+		uint32_t live = vm->gc.gc_vars_num;
+		uint32_t trig = live + (live >> 1);
+		vm->gc.gc_trig_var_num = (trig < GC_TRIG_VAR_NUM_DEF) ? GC_TRIG_VAR_NUM_DEF : trig;
+	}
 	mario_debug("done.\n");
 }
 
