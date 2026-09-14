@@ -1673,7 +1673,10 @@ static void load_ncache_free(vm_t* vm) {
 }
 
 static void load_ncache_invalidate(vm_t* vm, node_t* node) {
-	if(vm->load_ncache.size == 0)
+	/* A node whose var carries no VM (node_free -> load_ncache_invalidate passes
+	 * node->var->vm, which is NULL for a var that was never bound to a running
+	 * VM) has no cache to invalidate; guard before touching vm->load_ncache. */
+	if(vm == NULL || vm->load_ncache.size == 0)
 		return;
 
 	if(node == NULL || node->ncache_instr == 0)
@@ -1806,12 +1809,12 @@ void node_free(void* p) {
 	if(node == NULL)
 		return;
 	
-	if(node->var != NULL) {
+	if(node->var != NULL && node->var->vm != NULL) {
 		load_ncache_invalidate(node->var->vm, node);
 	}
 
 
-	if(!var_empty(node->var)) {
+	if(!var_empty(node->var) && node->var->vm != NULL) {
 		var_unref(node->var);
 	}
 	mario_free(node->name);
@@ -2278,6 +2281,10 @@ inline void var_clean(var_t* var) {
 
 static inline void add_to_free(var_t* var) {
 	vm_t* vm = var->vm;
+	/* A var with no VM is already recycled memory reached through a dangling
+	 * node->var; linking it into a free list would corrupt that list. */
+	if(vm == NULL)
+		return;
 	var->status = V_ST_FREE;
 	if(vm->free_var_buffer != NULL)
 		vm->free_var_buffer->prev = var;
@@ -2289,6 +2296,11 @@ static inline void add_to_free(var_t* var) {
 static void gc(vm_t* vm, bool force);
 static inline void add_to_gc(var_t* var) {
 	vm_t* vm = var->vm;
+	/* Same sentinel as add_to_free: vm==NULL means this "var" is recycled heap
+	 * (a dangling node->var), not a live variable. Dereferencing vm->gc here
+	 * faulted at NULL+offsetof(gc) during Array.sort teardown. */
+	if(vm == NULL)
+		return;
 	var->prev = vm->gc.gc_vars_tail;
 	if(vm->gc.gc_vars_tail != NULL)
 		vm->gc.gc_vars_tail->next = var;
@@ -2305,7 +2317,7 @@ static inline void add_to_gc(var_t* var) {
 	 * node_free() calls in the same teardown still dereference (node->var->vm),
 	 * causing a use-after-free. Defer it to the next add_to_gc outside a teardown. */
 	if(vm->gc.gc_vars_num > vm->gc.gc_trig_var_num && vm->gc.gc_defer == 0)
-		gc(vm, false);
+		vm->gc.gc_pending = true; /* consumed at the next vm_run safe point */
 }
 
 static inline var_t* get_from_free(vm_t* vm) {
@@ -2325,6 +2337,10 @@ static inline var_t* get_from_free(vm_t* vm) {
 
 static inline void remove_from_gc(var_t* var) {
 	vm_t* vm = var->vm;
+	/* Recycled heap reached through a dangling node->var can read back as
+	 * V_ST_GC with vm==NULL; unlinking it would deref NULL and corrupt the list. */
+	if(vm == NULL)
+		return;
 	if(var->prev != NULL)
 		var->prev->next = var->next;
 	else
@@ -2464,6 +2480,10 @@ void var_free(void* p) {
 		return;
 
 	vm_t* vm = var->vm;
+	/* Without a VM there is no free-list / gc-list to recycle into; this is
+	 * recycled memory, not a live var. */
+	if(vm == NULL)
+		return;
 
 	if(var->is_func) {
 		func_t* func = var_get_func(var);
@@ -2519,6 +2539,9 @@ void var_free(void* p) {
 inline var_t* var_ref(var_t* var) {
 	if(var == NULL)
 		return NULL;
+	/* Same recycled-heap sentinel as var_unref: never touch a var with no VM. */
+	if(var->vm == NULL)
+		return var;
 	++var->refs;
 	if(var->status == V_ST_GC) {
 		/*remove from vm->gc_vars list.*/
@@ -2530,6 +2553,10 @@ inline var_t* var_ref(var_t* var) {
 
 inline void var_unref(var_t* var) {
 	if(var_empty(var))
+		return;
+	/* Recycled heap reached via a stale node->var reads back as live but has no
+	 * VM; tearing it down would double-free. Treat it as already dead. */
+	if(var->vm == NULL)
 		return;
 
 	if(var->refs > 0)
@@ -3801,7 +3828,7 @@ static PC vm_pop_scope(vm_t* vm) {
 	if(sc->var != NULL && sc->var->refs > 1) //captured by a closure: outlives this scope
 		load_ncache_invalidate_var(vm, sc->var);
 	scope_free(sc);
-	gc(vm, false);
+	vm->gc.gc_pending = true; /* defer to vm_run safe point */
 	return pc;
 }
 
@@ -8676,6 +8703,13 @@ bool vm_run(vm_t* vm) {
 	register PC* code = vm->bc.code_buf;
 
 	do {
+		/* Opportunistic gc safe point: between instructions the value stack and
+		 * scope stack hold every live var, so a collection here cannot sweep a
+		 * var a C frame still references bare (native_Array_sort et al.). */
+		if(vm->gc.gc_pending && vm->gc.gc_defer == 0 && !vm->gc.is_doing_gc) {
+			vm->gc.gc_pending = false;
+			gc(vm, false);
+		}
 		register PC ins = code[vm->pc++];
 		register opr_code_t instr = OP(ins);
 		register uint32_t offset = OFF(ins);
@@ -8991,6 +9025,7 @@ vm_t* vm_new(compiler_func_t compiler, uint32_t var_cache_size, uint32_t load_nc
 	vm->terminated = false;
 	vm->pc = 0;
 	vm->gc.gc_trig_var_num = GC_TRIG_VAR_NUM_DEF;
+	vm->gc.gc_pending = false;
 	vm->gc.free_var_buffer_num = FREE_VAR_BUFFER_NUM_DEF;
 	vm->stack_top = 0;
 

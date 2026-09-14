@@ -615,6 +615,7 @@ typedef struct st_vm {
 	struct {
 		bool            is_doing_gc;
 		uint32_t        gc_defer; //>0 while the object graph is temporarily unrooted (var_clean teardown / func_call arg setup); defer opportunistic gc.
+		bool            gc_pending; //opportunistic gc requested but deferred to the next vm_run instruction boundary (a safe point where all live vars are rooted).
 		uint32_t        gc_trig_var_num; //trigger gc when var num reach this value.
 		uint32_t        free_var_buffer_num; // number of free var buffer.
 		var_t*          gc_vars;
