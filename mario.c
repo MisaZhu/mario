@@ -2356,6 +2356,29 @@ static inline void remove_from_gc(var_t* var) {
 		var->vm->gc.gc_vars_num--;
 }
 
+/* Bind f->closure.func = outer AND pin outer's func_t so it outlives f.
+ * closure.func is a RAW func_t* with no refcount of its own. When `outer` is a
+ * transient function (an IIFE, or a callback whose last JS reference drops the
+ * moment it returns), var_free() recycles outer's owner var -> func_free() frees
+ * outer's func_t -> f's captured lexical chain dangles, and vm_find_in_scopes()
+ * walking f->closure.func dereferences freed memory (the block reused as a string
+ * such as "this"/"RegExp"/"prototype"). gc_mark's is_func walk keeps outer alive
+ * across a gc SWEEP, but nothing stops a synchronous REFCOUNT release; holding a
+ * var_ref on outer->owner_var here does. Released in var_free()/func_free(). */
+static void func_bind_closure_func(func_t* f, func_t* outer) {
+	if(f == NULL)
+		return;
+	f->closure.func = outer;
+	/* Drop any previously pinned owner var before taking a new one (re-capture). */
+	if(f->closure_func_ref != NULL) {
+		var_t* old = f->closure_func_ref;
+		f->closure_func_ref = NULL;
+		var_unref(old);
+	}
+	if(outer != NULL && outer->owner_var != NULL)
+		f->closure_func_ref = var_ref(outer->owner_var);
+}
+
 static bool func_set_closure(var_t* var, var_t* closure, func_t* closure_func) {
 	func_t* func = var_get_func(var);
 	/* Guard against re-capture: definition-time capture (vm_capture_closure)
@@ -2374,7 +2397,7 @@ static bool func_set_closure(var_t* var, var_t* closure, func_t* closure_func) {
 		 * stack's ref intact; unreachable over-retained vars are still collected
 		 * by the reachability-based gc. */
 		func->closure.var = var_ref(closure);
-		func->closure.func = closure_func;
+		func_bind_closure_func(func, closure_func);
 		return true;
 	}
 	return false;
@@ -2412,9 +2435,29 @@ static inline void gc_mark(var_t* var, bool mark) {
 	if(var->is_func) {
 		func_t* func = var_get_func(var);
 		if(func != NULL) {
+			/* Walk the WHOLE captured lexical chain, not just the innermost env.
+			 * closure.var is the defining scope's env (held by a var_ref); but
+			 * closure.func is a RAW func_t* of the next-outer function with no ref
+			 * and no root. Marking only closure.var let those outer func_t's be
+			 * swept: func_free() recycled them and vm_find_in_scopes() then walked a
+			 * dangling closure.func -> use-after-free (the freed block reused as a
+			 * string, e.g. "RegExp"/"this"/"prototype"). Root each level's env AND
+			 * the func_t's owner_var, which keeps that func_t alive and recursively
+			 * marks its own env/chain. The chain is strictly outer-ward (acyclic),
+			 * mirroring vm_find_in_scopes()'s own walk; gc_marking guards re-entry. */
 			var_t* closure = func->closure.var;
-			if(!var_empty(closure) && closure->gc_marking == false)
-				gc_mark(closure, mark);
+			func_t* closure_func = func->closure.func;
+			while(closure != NULL || closure_func != NULL) {
+				if(!var_empty(closure) && closure->gc_marking == false)
+					gc_mark(closure, mark);
+				if(closure_func == NULL)
+					break;
+				var_t* fvar = closure_func->owner_var;
+				if(fvar != NULL && fvar->gc_marking == false)
+					gc_mark(fvar, mark);
+				closure = closure_func->closure.var;
+				closure_func = closure_func->closure.func;
+			}
 		}
 	}
 
@@ -2469,8 +2512,20 @@ static inline void gc_mark_scopes(vm_t* vm, bool mark) {
 	int i;
 	for(i=0; i<vm->scope_stack_top; ++i) {
 		scope_t* sc = vm->scope_stack[i];
-		if(sc != NULL)
-			gc_mark(sc->var, mark);
+		if(sc == NULL)
+			continue;
+		gc_mark(sc->var, mark);
+		/* Root the function OBJECT var that owns sc->func (func_t). func_call()
+		 * picks func_var off the value stack (or holds it as a borrowed C pointer),
+		 * so during the callee's body nothing else reaches it; a gc sweep would
+		 * free func_var -> func_free() frees the func_t -> sc->func dangles. Marking
+		 * it also walks the func's ENTIRE captured lexical chain (gc_mark's is_func
+		 * branch roots every closure.func's owner_var and env), so the outer
+		 * func_t's vm_find_in_scopes() traverses stay live for this frame's whole
+		 * execution. (The generator-resume frame roots its func var via the
+		 * "@@gen_func" hidden member and leaves sc->func_var NULL, which gc_mark
+		 * tolerates.) */
+		gc_mark(sc->func_var, mark);
 	}
 }
 
@@ -2487,7 +2542,7 @@ void var_free(void* p) {
 
 	if(var->is_func) {
 		func_t* func = var_get_func(var);
-		if(func != NULL && func->closure.var != NULL) {
+		if(func != NULL && (func->closure.var != NULL || func->closure_func_ref != NULL)) {
 			/* Detach the closure BEFORE releasing it. A function returned out of
 			 * the scope that defines it keeps two links to that same scope: the
 			 * scope still owns the node holding this var, and this var's func_t
@@ -2497,9 +2552,19 @@ void var_free(void* p) {
 			 * func_free()ing the func_t and queueing this var for reuse - leaving
 			 * us writing through freed memory and queueing the var a second time. */
 			var_t* closure = func->closure.var;
+			var_t* cfunc_ref = func->closure_func_ref;
 			func->closure.var = NULL;
 			func->closure.func = NULL;
-			var_unref(closure);
+			func->closure_func_ref = NULL;
+			/* Release the pinned owner var of the next-outer func_t first: it keeps
+			 * closure.func's func_t alive, and dropping it may recursively tear down
+			 * that outer closure (its own var_free releases its closure_func_ref).
+			 * The lexical chain is strictly outer-ward/acyclic, so this can never
+			 * re-enter teardown of THIS var. */
+			if(cfunc_ref != NULL)
+				var_unref(cfunc_ref);
+			if(closure != NULL)
+				var_unref(closure);
 			//the release above may have torn this var down completely.
 			if(var_empty(var))
 				return;
@@ -4246,6 +4311,15 @@ static func_t* func_new() {
 
 static void func_free(void* p) {
 	func_t* func = (func_t*)p;
+	/* Defensive: var_free()'s is_func block normally detaches and releases this
+	 * before func_free() runs (via var_clean). If a func_t is ever freed through
+	 * another path, drop the pinned owner-var ref here so it is never leaked.
+	 * Detach first so a recursive teardown can not re-enter this func_t. */
+	if(func->closure_func_ref != NULL) {
+		var_t* ref = func->closure_func_ref;
+		func->closure_func_ref = NULL;
+		var_unref(ref);
+	}
 	array_clean(&func->args, NULL);
 	mario_free(p);
 }
@@ -4255,6 +4329,8 @@ static var_t* var_new_func(vm_t* vm, func_t* func) {
 	var->is_func = 1;
 	var->free_func = func_free;
 	var->value = func;
+	if(func != NULL)
+		func->owner_var = var; //gc anchor: root this func_t via its owning var (see gc_mark is_func walk)
 	var_t* proto = var_get_prototype(vm->builtin_vars.var_Object);
 	if(proto == NULL)
 		proto = var_new_obj_no_proto(vm, NULL, NULL);
@@ -4398,6 +4474,7 @@ static bool func_call(vm_t* vm, var_t* obj, var_t* func_var, int arg_num) {
 		sc->pc = vm->pc;
 		sc->is_func = true;
 		sc->func = func;
+		sc->func_var = func_var; //root the function object so its func_t survives gc during the body
 		sc->stack_top = vm->stack_top; //frame baseline (env already pushed): a throw truncates leaked operands down to here
 
 		vm_push_scope(vm, sc);
@@ -6117,7 +6194,7 @@ static void propagate_closure_cb(const char* key, void* value, void* user_data) 
 	func_t* f = var_get_func(node->var);
 	if(f != NULL && f->closure.var == NULL) {
 		f->closure.var = var_ref(cp->scope_var);
-		f->closure.func = cp->scope_func;
+		func_bind_closure_func(f, cp->scope_func);
 	}
 }
 
@@ -6673,7 +6750,7 @@ static void vm_capture_closure(vm_t* vm, var_t* funcv) {
 	if(sc == NULL || sc->var == NULL || sc->func == NULL)
 		return;
 	f->closure.var = var_ref(sc->var);
-	f->closure.func = sc->func;
+	func_bind_closure_func(f, sc->func);
 }
 
 static inline void handle_func(vm_t* vm, PC ins, opr_code_t instr, uint32_t offset) {
@@ -6721,7 +6798,7 @@ static inline void handle_func(vm_t* vm, PC ins, opr_code_t instr, uint32_t offs
 					s = p;
 				}
 				f->closure.var = var_ref(dsc->var);
-				f->closure.func = (s != NULL && s->is_func) ? s->func : NULL;
+				func_bind_closure_func(f, (s != NULL && s->is_func) ? s->func : NULL);
 			}
 		}
 		vm_push(vm, v);
@@ -7023,6 +7100,7 @@ static var_t* gen_resume_body(vm_t* vm, gen_state_t* g, var_t* sent, int mode) {
 		sc->pc = caller_pc; //stale after this resume; every exit path below restores pc itself
 		sc->is_func = true;
 		sc->func = g->func;
+		sc->func_var = (g->func != NULL) ? g->func->owner_var : NULL; //root the generator body's func + lexical chain during the resume
 		sc->stack_top = vm->stack_top; //frame baseline for throw truncation
 		vm_push_scope(vm, sc);
 		vm->pc = g->func->pc;

@@ -477,11 +477,26 @@ typedef struct st_func {
 	void*               data;
 	m_array_t           args; //argument names
 	var_t*              owner;
+	/* Back-pointer to the var_t that owns this func_t (var->value == this, set by
+	 * var_new_func). A closure captures the next-outer function via the RAW
+	 * closure.func pointer below - no ref, no root - so the gc could sweep that
+	 * function's var, func_free() its func_t, and leave every inner closure's
+	 * closure.func dangling. owner_var lets the gc root each func_t along the
+	 * captured lexical chain (see gc_mark's is_func walk). */
+	var_t*              owner_var;
 
 	struct {
 		var_t*             var;
 		struct st_func*    func;
 	} closure;
+	/* Owned reference to closure.func's OWNER var (closure.func->owner_var), or
+	 * NULL. closure.func is a raw func_t* with no refcount of its own; when the
+	 * next-outer function is transient (an IIFE / a callback whose last JS
+	 * reference drops right after it returns), var_free() recycles its func_t
+	 * while this inner closure still points at it, dangling the lexical chain
+	 * vm_find_in_scopes() walks. Holding the owner var keeps that func_t alive
+	 * exactly as long as this closure. Released in var_free()/func_free(). */
+	var_t*              closure_func_ref;
 } func_t;
 
 /* func_t.regular distinguishes a normal function/method from an ES6 accessor.
@@ -535,6 +550,13 @@ typedef struct st_scope {
 	uint32_t is_switch: 4; // switch scope: a `break` stops here, a `continue` does not (it belongs to an enclosing loop)
 	uint32_t is_strict: 4;
 	func_t*  func;
+	/* The function OBJECT var that owns `func` (func_t). func_call() picks
+	 * func_var off the value stack (vm_stack_pick) or receives it as a borrowed
+	 * C pointer, so during the callee's body it is not a stack/scope-var root;
+	 * only this back-pointer keeps it reachable. Without rooting it here, an
+	 * opportunistic gc sweeps func_var -> func_free() frees the func_t -> sc->func
+	 * dangles, and the next vm_find_in_scopes() dereferences freed memory. */
+	var_t*   func_var;
 	struct st_scope* prev;
 	//continue and break anchor for loop(while/for)
 } scope_t;
